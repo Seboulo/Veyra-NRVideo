@@ -889,6 +889,10 @@ bool EnhanceGraph::initialize(const EnhanceGraphDesc& desc)
     const bool occlusionCheck=flowRefine_&&!(GetEnvironmentVariableW(L"VEYRA_TEST_FLOW_CONSISTENCY",consistency,4)&&consistency[0]==L'0');
     flowConsistency_=occlusionCheck&&nvidiaFlow;
     flowClaims_=occlusionCheck&&fidelityFlow;
+    // Zero-vector candidate in FlowRefine (still on-screen objects while the camera turns);
+    // VEYRA_TEST_FLOW_ZERO=0 turns it off for A/B comparisons.
+    wchar_t zeroCandidate[4]{};
+    flowZeroBias_=flowRefine_&&!(GetEnvironmentVariableW(L"VEYRA_TEST_FLOW_ZERO",zeroCandidate,4)&&zeroCandidate[0]==L'0')?.012f:0.f;
     uint64_t budget=0,usage=0;
     // Every NR layer allocates its own full set of textures, and a stabilised
     // layer adds two history/guide pairs on top. The stack is bounded (16 nodes),
@@ -1185,6 +1189,7 @@ bool EnhanceGraph::createResources()
         veyra::log::info("graph",std::format("{} FG motion: {}",presentSinkFg()?"present-sink":"graph",!desc_.fgUsesFlow()?"zero":flowConsistency_?"refined NVOF (FlowRefine+FlowFill, forward-backward)":
         flowClaims_?"refined FidelityFX (FlowRefine+FlowClaim+FlowFill)":!flowRefine_?"validated flow":
         desc_.opticalFlowBackend==engine::OpticalFlowBackend::AmdFidelityFx?"refined FidelityFX (FlowRefine+FlowFill)":"refined NVOF (FlowRefine+FlowFill)"));
+    if(flowRefine_)veyra::log::info("graph",std::format("FG motion zero-vector candidate={} bias={}",flowZeroBias_>0?"on":"off",flowZeroBias_));
     // Colour grade tables (v4): only allocated when the stage is enabled.
     colorActive_=desc_.color.enabled&&!desc_.nodeColor(0);
     if(colorActive_){
@@ -3873,7 +3878,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                     if(flowConsistency_)tracker_.transition(list,nvofReverseTex_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                     // Flags: 1 NVOF backward output, 2 FidelityFX vectors, 4 FidelityFX warming up.
                     const uint32_t refineFlags=(flowConsistency_?1u:0u)|(amdOf_?2u:0u)|(amdOf_&&!amdOf_->warmedUp()?4u:0u);
-                    const float rc[8]={uintBits(rawW_),uintBits(rawH_),uintBits(nvofW_),uintBits(nvofH_),uintBits(selectedGrid_),.004f,uintBits(refineFlags),0};
+                    const float rc[8]={uintBits(rawW_),uintBits(rawH_),uintBits(nvofW_),uintBits(nvofH_),uintBits(selectedGrid_),.004f,uintBits(refineFlags),flowZeroBias_};
                     flowRefinePass_.bind(list,rc,gpuHandleOf(flowRefinePass_,0).ptr,gpuHandleOf(flowRefinePass_,5).ptr);
                     list->Dispatch((nvofW_+15)/16,(nvofH_+15)/16,1);
                     tracker_.uavBarrier(list,fgFlowRefined_.Get());

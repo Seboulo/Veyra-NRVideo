@@ -12,6 +12,12 @@
 // vector matches the smooth background beside it photometrically. The choice itself stays
 // photometric: on rotating limbs and repetitive texture the check is too noisy to rank by.
 // FidelityFX optical flow has no backward output; FlowClaim makes the same check for it.
+// The zero vector is one more candidate (as in 3-D recursive search block matching, de Haan
+// et al., IEEE TCSVT 1993): a block flow estimated coarse to fine gives a small object that
+// stays still on screen (a third-person character or a HUD element while the camera turns)
+// the background's motion in every neighbouring cell, so no cell candidate keeps it in place
+// and frame generation moves it with the background. Zero wins only when its patch matches
+// clearly better (zeroBias), so flat or repetitive background keeps its cell vector.
 Texture2D<int2> rawFlow : register(t0);          // grid extent: NVOF S10.5 or FidelityFX integer pixels
 Texture2D<float4> previousColor : register(t1);  // flow extent
 Texture2D<float4> currentColor : register(t2);   // flow extent
@@ -29,7 +35,7 @@ cbuffer FlowRefineConstants : register(b0)
     float tieBias;   // added to every neighbour cell's cost: the own cell wins ties
     uint flags;      // 1 reverseFlow holds NVOF's backward output (else w = 0); 2 FidelityFX
                      // vectors; 4 FidelityFX still warming up
-    uint unused0;
+    float zeroBias;  // > 0: also try the zero vector, at this extra cost; 0: off
 };
 
 float luma(float3 c) { return dot(c, float3(.2126, .7152, .0722)); }
@@ -62,6 +68,13 @@ void main(uint3 id : SV_DispatchThreadID)
         cost /= 9;
         if (k != 4) cost += tieBias;
         if (cost < bestCost) { bestCost = cost; best = v; }
+    }
+    if (zeroBias > 0) {
+        float cost = 0;
+        [unroll] for (int j = 0; j < 9; ++j)
+            cost += abs(current[j] - luma(previousColor[clamp(p + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+        cost = cost / 9 + zeroBias;
+        if (cost < bestCost) { bestCost = cost; best = 0; }
     }
     float disagreement = 0;
     if ((flags & 1u) != 0) {

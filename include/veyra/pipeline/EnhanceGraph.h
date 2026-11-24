@@ -1017,6 +1017,7 @@ private:
     // FidelityFX flow has no backward output: FlowClaim's previous-frame claims stand in
     // for the forward-backward check (same VEYRA_TEST_FLOW_CONSISTENCY switch).
     bool flowClaims_=false;
+    float flowZeroBias_=0.f; // FlowRefine zero-vector candidate cost bias; 0 = off
     ComPtr<ID3D12Resource> fgFlowClaims_,fgFlowAgreement_;
     uint64_t motionPreviousSource_[2]={},previousSource_=0;
     ComPtr<ID3D12Resource> proxyTex_;
