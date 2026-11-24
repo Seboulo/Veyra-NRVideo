@@ -303,6 +303,10 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
                 changed=true;
             }
         }
+        if(p.contains(QStringLiteral("fsrNativeAa"))){
+            const bool on=p.value(QStringLiteral("fsrNativeAa")).toBool();
+            if(s.fsrNativeAa!=on){s.fsrNativeAa=on;changed=true;}
+        }
         if(p.contains(QStringLiteral("amdFrcBlend"))){
             const bool on=p.value(QStringLiteral("amdFrcBlend")).toBool();
             if(s.amdFrcBlendFallback!=on){s.amdFrcBlendFallback=on;changed=true;}

@@ -481,6 +481,8 @@ class QmlPlayerBridge : public QObject {
     // AMD FRC options (engine::AmdFrcProfile, AMF fallback blend), kept in shell preferences.
     Q_PROPERTY(int amdFrcProfile READ amdFrcProfile WRITE setAmdFrcProfile NOTIFY settingsChanged)
     Q_PROPERTY(bool amdFrcBlend READ amdFrcBlend WRITE setAmdFrcBlend NOTIFY settingsChanged)
+    // FSR 1:1 anti-aliasing when single-pass FSR has nothing to enlarge (shell preference).
+    Q_PROPERTY(bool fsrNativeAa READ fsrNativeAa WRITE setFsrNativeAa NOTIFY settingsChanged)
     Q_PROPERTY(bool dynamicHud READ dynamicHud WRITE setDynamicHud NOTIFY settingsChanged)
     Q_PROPERTY(bool dlssgLiteAvailable READ dlssgLiteAvailable CONSTANT)
     Q_PROPERTY(QString dlssgLiteHint READ dlssgLiteHint NOTIFY snapshotChanged)
@@ -1196,6 +1198,8 @@ public:
     void setAmdFrcProfile(int value);
     bool amdFrcBlend() const;
     void setAmdFrcBlend(bool value);
+    bool fsrNativeAa() const;
+    void setFsrNativeAa(bool value);
     bool dynamicHud() const;
     void setDynamicHud(bool value);
     bool dlssgLiteAvailable() const;

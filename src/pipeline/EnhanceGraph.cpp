@@ -868,7 +868,9 @@ bool EnhanceGraph::initialize(const EnhanceGraphDesc& desc)
     veyra::log::info("pipeline-order",desc.splitNrAcrossSr()?"NR(source) -> SR -> NR(work) -> FG (node preview)":desc.nrBeforeSr?"NR -> residual(source) -> SR -> FG (experimental preview)":"SR -> NR -> residual -> FG");
     if(!desc.videoHdr.valid()||(desc.hdrOutput&&!desc.hdrInput&&!desc.convertVideoHdr())){veyra::log::error("hdr","HDR output requires native HDR input or explicit Video HDR conversion");return false;}
     const bool videoRestore=!desc.stillImage&&desc.videoSrQuality>=1&&desc.videoSrQuality<=4;
-    srEnabled_ = desc.enableSr && (srcW_ != workW_ || srcH_ != workH_ || videoRestore || srPrescaleActive() || srResolveActive());
+    // FSR native anti-aliasing runs single-pass FSR 1:1, like the RTX native restore.
+    const bool fsrNativeAa=desc.fsrNativeAa&&!desc.stillImage&&!desc.dualSr&&desc_.videoSrQuality==engine::kVideoSrFsr;
+    srEnabled_ = desc.enableSr && (srcW_ != workW_ || srcH_ != workH_ || videoRestore || fsrNativeAa || srPrescaleActive() || srResolveActive());
     lmxxfNr_ = context_.adapter().vendorId == 0x1002 || desc.nrRuntime == engine::NrRuntime::LmxxfAmd;
     nrEnabled_ = desc.enableNr && !desc.noFeatures && (!desc.noNgx || lmxxfNr_);
     fgEnabled_ = desc.enableFg && !desc.noFeatures && !desc.stillImage &&
@@ -1734,7 +1736,7 @@ bool EnhanceGraph::initFsrSr()
             veyra::log::error("fsr-sr", std::format("AMD FSR upscaling unavailable{}; the engine will disable the stage",pass));
             return false;
         }
-        veyra::log::info("fsr-sr", std::format("selected{} render={}x{} output={}x{} provider={} hdr={}",pass,inW,inH,outW,outH,backend->providerVersion(),hdr));
+        veyra::log::info("fsr-sr", std::format("selected{} render={}x{} output={}x{} provider={} hdr={} nativeAa={}",pass,inW,inH,outW,outH,backend->providerVersion(),hdr,desc_.fsrNativeAa));
         return true;
     };
     if(finalFsr&&!create(fsrSrBackend_,renderW,renderH,workW_,workH_,desc_.dualSr?" second pass":"")){failedBackend_=engine::FailedBackend::None;return true;}
@@ -4115,7 +4117,10 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         auto* fsrTarget=srHdrRestore_.raw?srHdrRestore_.raw.Get():workRgba_.Get();
         tracker_.transition(list,fsrTarget,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         if(!fsrSrBackend_->evaluate(list,srInput,srMotion,fsrSrDepth_.Get(),fsrTarget,
-                                    srcW_,srcH_,workW_,workH_,reset||(desc_.srUsesFlow()&&!fsrSourceMotion),float(deltaMs))){
+                                    srcW_,srcH_,workW_,workH_,reset||(desc_.srUsesFlow()&&!fsrSourceMotion)||
+                                    // 1:1 anti-aliasing without estimated motion: no temporal history,
+                                    // so a moving picture is never smeared by zero-motion accumulation.
+                                    (desc_.fsrNativeAa&&!fsrSourceMotion),float(deltaMs))){
             failedBackend_=engine::FailedBackend::Sr;
             return false;
         }

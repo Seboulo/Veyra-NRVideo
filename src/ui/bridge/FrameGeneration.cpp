@@ -321,6 +321,16 @@ void QmlPlayerBridge::setAmdFrcBlend(bool value) {
     if(!impl_->savePrefs())veyra::log::warn("ui-prefs","AMD FRC fallback not saved");
     emit settingsChanged();
 }
+bool QmlPlayerBridge::fsrNativeAa() const { return settings().fsrNativeAa; }
+void QmlPlayerBridge::setFsrNativeAa(bool value) {
+    auto s=settings();
+    if(s.fsrNativeAa==value)return;
+    s.fsrNativeAa=value;
+    if(!impl_->commit(std::move(s))){emit settingsChanged();return;}
+    impl_->prefs[QStringLiteral("fsrNativeAa")]=value;
+    if(!impl_->savePrefs())veyra::log::warn("ui-prefs","FSR native anti-aliasing not saved");
+    emit settingsChanged();
+}
 bool QmlPlayerBridge::dynamicHud() const { return settings().dynamicHud; }
 void QmlPlayerBridge::setDynamicHud(bool value) {
     auto s = settings();

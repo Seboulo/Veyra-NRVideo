@@ -150,7 +150,12 @@ inline pipeline::ResolutionPlan describeStages(const StageRequest& request,const
     // (5090 field log 57: 4K->4K VSR cost ~8.7 ms a frame and pushed 60 fps over budget).
     const bool nativeVideoRestore=request.sr&&!request.stillImage&&!request.uncompressedSource&&request.nvidiaAdapter&&
         ngxVideoSr(settings.videoSrQuality);
-    desc.enableSr=(plan.srApplied||nativeVideoRestore)&&videoSrRunsOn(settings.videoSrQuality,request.nvidiaAdapter,request.amdAdapter);
+    // FSR anti-aliasing at the source size: single-pass FSR with nothing to enlarge runs
+    // 1:1 instead of being skipped (user option, off by default). Same frame, no delay.
+    const bool fsrNativeAa=request.sr&&!request.stillImage&&settings.fsrNativeAa&&!plan.srApplied&&!plan.dualSrApplied&&
+        !settings.dualSrEnabled&&currentVideoSrQuality(settings.videoSrQuality)==kVideoSrFsr;
+    desc.enableSr=(plan.srApplied||nativeVideoRestore||fsrNativeAa)&&videoSrRunsOn(settings.videoSrQuality,request.nvidiaAdapter,request.amdAdapter);
+    desc.fsrNativeAa=fsrNativeAa&&desc.enableSr;
     desc.enableNr=request.nr&&(request.nvidiaAdapter||request.amdNr)&&(!settings.nrLayerCount||settings.activeNrLayerCount()>0);
     if(!desc.enableNr||!request.nvidiaAdapter||settings.opticalFlowBackend!=OpticalFlowBackend::Nvidia)
         plan.flow=plan.source;

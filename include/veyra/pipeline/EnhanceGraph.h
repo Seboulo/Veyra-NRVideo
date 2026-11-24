@@ -164,6 +164,8 @@ struct EnhanceGraphDesc {
     bool dynamicHud=false;
     engine::AmdFrcProfile amdFrcProfile=engine::AmdFrcProfile::Auto; // AMD FRC only
     bool amdFrcBlendFallback=true;
+    // Single-pass FSR runs 1:1 (source size) as anti-aliasing (engine fsrNativeAa).
+    bool fsrNativeAa=false;
     uint64_t settingsRevision=1;
     engine::FlowQuality flowQuality=engine::FlowQuality::Balanced;
     engine::OpticalFlowBackend opticalFlowBackend=engine::OpticalFlowBackend::Nvidia;

@@ -568,6 +568,10 @@ struct EnhancementSettings {
     // the two real frames (AMD's default) or repeats one where its confidence is low.
     AmdFrcProfile amdFrcProfile=AmdFrcProfile::Auto;
     bool amdFrcBlendFallback=true;
+    // FSR at the source size (UI "FSR 原生抗锯齿"): when single-pass FSR has nothing to
+    // enlarge (source already at the SR target), run it 1:1 as anti-aliasing instead
+    // of skipping it. No frame of delay; costs the FSR pass GPU time.
+    bool fsrNativeAa=false;
     ContentRate content=ContentRate::Transport;
     AudioSyncMode audioSync=AudioSyncMode::Automatic;
     int32_t audioOffsetMs=0;
@@ -600,6 +604,7 @@ struct EnhancementSettings {
         if(!nr||!protection.enabled)active.protection=defaults.protection;
         if(!exclusion.enabled)active.exclusion=defaults.exclusion;
         if(!sr){active.srTarget=defaults.srTarget;active.videoSrQuality=defaults.videoSrQuality;active.srMotion=defaults.srMotion;}
+        if(!sr||currentVideoSrQuality(videoSrQuality)!=kVideoSrFsr||dualSrEnabled)active.fsrNativeAa=defaults.fsrNativeAa;
         // The DLSS SR model serves every DLSS SR pass, the second of a double SR too.
         if(!usesDlaa()&&(!sr||(videoSrQuality!=0&&!(dualSrEnabled&&dualSrQuality==0))))active.dlssSrModel=defaults.dlssSrModel;
         if(!sr||!dualSrEnabled){

@@ -1582,6 +1582,17 @@ VPage {
                                     onPicked: id => veyra.dlssSrModel = Number(id)
                                 }
                             }
+                            VRow {
+                                objectName: "list-fsr-native-aa"
+                                label: qsTr("FSR 原生抗锯齿")
+                                hint: qsTr("源已是目标分辨率时，FSR 以 1:1 运行做抗锯齿，而不是跳过。不增加延迟，只增加 FSR 的 GPU 耗时。运动来源选光流可启用时间累积；无光流时每帧独立处理，避免拖影 · 实验 · 默认关闭")
+                                visible: veyra.videoSrQuality === 5 && !veyra.dualSrEnabled
+                                VSwitch {
+                                    objectName: "list-fsr-native-aa-switch"
+                                    checked: veyra.fsrNativeAa
+                                    onToggled: checked => veyra.fsrNativeAa = checked
+                                }
+                            }
                             SrStageEditor { Layout.fillWidth: true; namePrefix: "list" }
 
 

@@ -2627,6 +2627,19 @@
    "ru": "FSR 4 ML нуждается в поддерживаемом RX 9000 и драйвере и переключается на FSR 3.1, когда он недоступен; еще не проверен на фактическом RX 9000"
   },
   {
+   "zh": "FSR 原生抗锯齿",
+   "src": "qml/ProPage.qml",
+   "zh-TW": "FSR 原生抗鋸齒",
+   "en": "FSR native anti-aliasing",
+   "ja": "FSR ネイティブアンチエイリアス",
+   "ko": "FSR 네이티브 안티에일리어싱",
+   "es": "Antialiasing nativo FSR",
+   "fr": "Anticrénelage natif FSR",
+   "de": "FSR-natives Anti-Aliasing",
+   "pt-BR": "Antisserrilhamento nativo FSR",
+   "ru": "Нативное сглаживание FSR"
+  },
+  {
    "zh": "FXAA：最快，整体略柔",
    "src": "qml/AntiAliasEditor.qml",
    "zh-TW": "FXAA：最快，整體略柔",
@@ -28523,6 +28536,19 @@
    "de": "Quellgröße",
    "pt-BR": "Tamanho de origem",
    "ru": "Размер источника"
+  },
+  {
+   "zh": "源已是目标分辨率时，FSR 以 1:1 运行做抗锯齿，而不是跳过。不增加延迟，只增加 FSR 的 GPU 耗时。运动来源选光流可启用时间累积；无光流时每帧独立处理，避免拖影 · 实验 · 默认关闭",
+   "src": "qml/ProPage.qml",
+   "zh-TW": "來源已是目標解析度時，FSR 以 1:1 執行做抗鋸齒，而不是略過。不增加延遲，只增加 FSR 的 GPU 耗時。運動來源選光流可啟用時間累積；無光流時每幀獨立處理，避免拖影 · 實驗 · 預設關閉",
+   "en": "When the source is already at the target resolution, FSR runs 1:1 as anti-aliasing instead of being skipped. No added latency, only the FSR GPU time. With optical flow as the motion source it accumulates over time; without flow each frame is processed alone to avoid smearing · Experimental · Off by default",
+   "ja": "ソースがすでに目標解像度のとき、スキップせず FSR を 1:1 でアンチエイリアスとして実行します。遅延は増えず、FSR の GPU 時間だけが増えます。モーションソースをオプティカルフローにすると時間累積を使い、フローがない場合は残像を避けるため各フレームを単独で処理します · 実験的 · 既定はオフ",
+   "ko": "소스가 이미 목표 해상도이면 건너뛰지 않고 FSR을 1:1로 실행해 안티에일리어싱합니다. 지연은 늘지 않고 FSR GPU 시간만 늘어납니다. 모션 소스를 옵티컬 플로우로 하면 시간 누적을 사용하고, 플로우가 없으면 잔상을 피하려고 프레임마다 따로 처리합니다 · 실험 · 기본 꺼짐",
+   "es": "Cuando la fuente ya está en la resolución objetivo, FSR se ejecuta 1:1 como antialiasing en lugar de omitirse. No añade latencia, solo el tiempo de GPU de FSR. Con flujo óptico como fuente de movimiento acumula en el tiempo; sin flujo procesa cada fotograma por separado para evitar estelas · Experimental · Desactivado por defecto",
+   "fr": "Quand la source est déjà à la résolution cible, FSR tourne en 1:1 comme anticrénelage au lieu d'être ignoré. Aucune latence ajoutée, seulement le temps GPU de FSR. Avec le flux optique comme source de mouvement, il accumule dans le temps ; sans flux, chaque image est traitée seule pour éviter les traînées · Expérimental · Désactivé par défaut",
+   "de": "Wenn die Quelle bereits die Zielauflösung hat, läuft FSR 1:1 als Anti-Aliasing, statt übersprungen zu werden. Keine zusätzliche Latenz, nur die GPU-Zeit von FSR. Mit optischem Fluss als Bewegungsquelle wird zeitlich akkumuliert; ohne Fluss wird jedes Bild einzeln verarbeitet, um Schlieren zu vermeiden · Experimentell · Standardmäßig aus",
+   "pt-BR": "Quando a fonte já está na resolução alvo, o FSR roda 1:1 como antisserrilhamento em vez de ser ignorado. Não adiciona latência, só o tempo de GPU do FSR. Com fluxo óptico como fonte de movimento ele acumula no tempo; sem fluxo cada quadro é processado sozinho para evitar rastros · Experimental · Desligado por padrão",
+   "ru": "Если источник уже в целевом разрешении, FSR работает 1:1 как сглаживание, а не пропускается. Задержка не растёт, добавляется только время GPU на FSR. С оптическим потоком как источником движения идёт временное накопление; без потока каждый кадр обрабатывается отдельно, чтобы избежать шлейфов · Экспериментально · По умолчанию выкл."
   },
   {
    "zh": "源帧预算 %1 ms",
