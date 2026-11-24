@@ -68,6 +68,21 @@ jobs:
         with:
           arch: x64
 
+      - name: Build AMD FidelityFX SDK 1.1.4 optical flow (static, /MT)
+        run: |
+          # Only the optical flow and its DX12 backend; Veyra links the static CRT, so match it.
+          $sdk = (Resolve-Path third_party_local/amd/FidelityFX-SDK/sdk).Path
+          cmake -S $sdk -B C:\ffx-build -G 'Visual Studio 17 2022' -A x64 `
+            -DFFX_API_BACKEND=DX12_X64 -DFFX_OF=ON -DFFX_AUTO_COMPILE_SHADERS=1 `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build C:\ffx-build --config Release --parallel --target ffx_opticalflow_x64 ffx_backend_dx12_x64
+          foreach ($lib in 'ffx_opticalflow_x64.lib', 'ffx_backend_dx12_x64.lib') {
+            if (!(Test-Path (Join-Path $sdk "bin/ffx_sdk/$lib"))) {
+              Get-ChildItem $sdk/bin -Recurse -Filter *.lib | ForEach-Object FullName | Write-Host
+              throw "FidelityFX build did not produce $lib"
+            }
+          }
+
       - name: Restore cargo-c
         id: cargo-c-cache
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -212,6 +227,7 @@ jobs:
           Copy-Item C:\v\installed\x64-windows\share\dav1d\copyright "$stage\licenses\DAV1D-COPYRIGHT.txt"
           Copy-Item C:\v\installed\x64-windows-static\share\libass\copyright "$stage\licenses\LIBASS-COPYRIGHT.txt"
           Copy-Item (Join-Path $env:DOVI_SOURCE 'LICENSE') "$stage\licenses\LIBDOVI-LICENSE.txt"
+          Copy-Item third_party_local\amd\FidelityFX-SDK\sdk\LICENSE.txt "$stage\licenses\AMD_FIDELITYFX_LICENSE.txt"
           [ordered]@{
             commit = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; runner = "$env:ImageOS $env:ImageVersion"
             msvc = $env:VCToolsVersion; windowsSdk = $env:WindowsSDKVersion; qt = $env:QT_VERSION

@@ -14,6 +14,8 @@ $pins = @(
     @{ Name = 'NVIDIA DLSS SDK 310.7.0';      Repo = 'NVIDIA/DLSS';                              Commit = 'a291cc7d2cc642a51566f3dfd5376f635cd1b284' },
     @{ Name = 'Intel XeSS SDK 3.0.2';         Repo = 'intel/xess';                               Commit = '8fe81bdbbaf00b3c1b733fd0d830c333dc84e6f0' },
     @{ Name = 'AMD FidelityFX SDK 2.3.0';     Repo = 'GPUOpen-LibrariesAndSDKs/FidelityFX-SDK'; Commit = '60f4ea81909200d8542eca14dccb2628b763a9a3' },
+    # Source of the AMD optical flow: the workflow builds its static libraries (MIT).
+    @{ Name = 'AMD FidelityFX SDK 1.1.4 (optical flow source)'; Repo = 'GPUOpen-LibrariesAndSDKs/FidelityFX-SDK'; Commit = 'c6efa6bf7f2027b3ec94f28578bb5965eabb9e55'; Key = 'ffx-1.1.4' },
     @{ Name = 'AMD AMF SDK 1.5.3 headers';    Repo = 'GPUOpen-LibrariesAndSDKs/AMF';             Commit = '57ee0cfb0e1a08d9041f77435653794c1b012be0' },
     @{ Name = 'nv-codec-headers n13.0.19.0';  Repo = 'FFmpeg/nv-codec-headers';                  Commit = 'e844e5b26f46bb77479f063029595293aa8f812d' },
     # NVIDIA publishes Optical Flow SDK 5.0.7 behind a developer login; this public
@@ -44,10 +46,12 @@ function Copy-Tree([string]$From, [string]$To) {
 New-Item -ItemType Directory -Force -Path $WorkRoot | Out-Null
 $src = @{}
 foreach ($p in $pins) {
-    $dir = Join-Path $WorkRoot (($p.Repo -split '/')[1])
+    # Key: the same repository pinned twice (FidelityFX 2.3.0 and 1.1.4) needs two folders.
+    $key = if ($p.Key) { $p.Key } else { $p.Repo }
+    $dir = Join-Path $WorkRoot $(if ($p.Key) { $p.Key } else { ($p.Repo -split '/')[1] })
     Write-Host "Fetching $($p.Repo) @ $($p.Commit)"
     Get-Pinned $p.Repo $p.Commit $dir
-    $src[$p.Repo] = $dir
+    $src[$key] = $dir
 }
 $tpl = Join-Path $VeyraRoot 'third_party_local'
 
@@ -61,6 +65,11 @@ $ffxSrc = Join-Path $src['GPUOpen-LibrariesAndSDKs/FidelityFX-SDK'] 'Kits/Fideli
 foreach ($sub in 'api', 'framegeneration', 'upscalers') {
     Copy-Tree (Join-Path $ffxSrc "$sub/include") (Join-Path $tpl "amd/FidelityFX-SDK-2.3.0/Kits/FidelityFX/$sub/include")
 }
+
+# FidelityFX SDK 1.1.4 sdk tree (sources, shader compiler, headers): the workflow builds
+# ffx_opticalflow_x64.lib and ffx_backend_dx12_x64.lib in place, where CMakeLists.txt
+# looks for them (VEYRA_FIDELITYFX_ROOT).
+Copy-Tree (Join-Path $src['ffx-1.1.4'] 'sdk') (Join-Path $tpl 'amd/FidelityFX-SDK/sdk')
 
 Copy-Tree (Join-Path $src['GPUOpen-LibrariesAndSDKs/AMF'] 'amf/public/include') (Join-Path $tpl 'amd/AMF-SDK-1.5.3/include')
 Copy-Tree (Join-Path $src['FFmpeg/nv-codec-headers'] 'include') (Join-Path $tpl 'nvidia/nv-codec-headers-13.0/include')
