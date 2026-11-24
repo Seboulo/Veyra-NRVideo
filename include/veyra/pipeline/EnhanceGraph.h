@@ -1051,6 +1051,9 @@ private:
     ComputePass firstSrRestorePass_;
     ComputePass downsamplePass_,residualPass_,stackProtectionPass_,flowAdaptPass_;
     ComputePass flowRefinePass_,flowFillPass_,fgFlowAdaptPass_,flowClaimPass_;
+    // VEYRA_TEST_FLOW_VIEW=1: tint the output with the FG motion (FlowView.hlsl).
+    ComputePass flowViewPass_;
+    bool flowView_=false;
     // Stage-5 output stabiliser (anti-flicker). Constructed only when the
     // setting is non-zero; a default (0) session never allocates it and the
     // dispatch is skipped, so the disabled path is unchanged.

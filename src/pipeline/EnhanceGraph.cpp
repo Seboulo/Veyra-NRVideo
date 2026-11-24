@@ -2505,6 +2505,12 @@ bool EnhanceGraph::createComputePasses()
         if(!flowFillPass_.loadShader("FlowFill.dxil",cs)||!flowFillPass_.create(context_.device(),cs,4,3,1))return false;
         if(flowClaims_&&(!flowClaimPass_.loadShader("FlowClaim.dxil",cs)||!flowClaimPass_.create(context_.device(),cs,3,1,2)))return false;
     }
+    {
+        wchar_t view[4]{};
+        flowView_=presentSinkFg()&&desc_.fgUsesFlow()&&GetEnvironmentVariableW(L"VEYRA_TEST_FLOW_VIEW",view,4)&&view[0]==L'1';
+        if(flowView_&&(!flowViewPass_.loadShader("FlowView.dxil",cs)||!flowViewPass_.create(context_.device(),cs,3,1,1)))return false;
+        if(flowView_)veyra::log::info("graph",std::format("FG motion test view on ({})",flowRefine_?"refined":"raw"));
+    }
     // Stage-5 output stabiliser. Only allocated when the setting is non-zero:
     // a default session never pays for it and the dispatch is skipped below, so
     // the disabled path stays byte-identical to a build without this pass.
@@ -2870,6 +2876,11 @@ bool EnhanceGraph::createViews()
     if (viewsUav) makeUav(context_.device(), videoFrame_[1].Get(), outputFormat(), cpu(blitPass_, 4));
     if (viewsTex) stagedSrv(nvofInB_.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, blitPass_, 5);
     if (viewsUav) makeUav(context_.device(), nvofInA_.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, cpu(blitPass_, 6));
+    if(flowView_){
+        stagedSrv(flowRefine_?fgBaseFlow_.Get():baseFlow_.Get(),DXGI_FORMAT_R16G16_FLOAT,flowViewPass_,0);
+        makeUav(context_.device(),videoFrame_[0].Get(),outputFormat(),cpu(flowViewPass_,1));
+        makeUav(context_.device(),videoFrame_[1].Get(),outputFormat(),cpu(flowViewPass_,2));
+    }
     if (viewsTex) stagedSrv(videoFrame_[0].Get(), outputFormat(), blitPass_, 7);
     if (viewsTex) stagedSrv(videoFrame_[1].Get(), outputFormat(), blitPass_, 8);
     if (viewsUav) makeUav(context_.device(), nvofInB_.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, cpu(blitPass_, 9));
@@ -4556,6 +4567,16 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         tracker_.transition(list, videoFrame_[parity].Get(), D3D12_RESOURCE_STATE_COMMON);
 
     }
+    if(flowView_&&haveFlow){
+        auto* viewMotion=flowRefine_?fgBaseFlow_.Get():baseFlow_.Get();
+        tracker_.transition(list,viewMotion,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        tracker_.transition(list,videoFrame_[parity].Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        const float c[8]={uintBits(workW_),uintBits(workH_),24.f,.7f,0,0,0,0};
+        flowViewPass_.bind(list,c,gpuHandleOf(flowViewPass_,0).ptr,gpuHandleOf(flowViewPass_,1+parity).ptr);
+        list->Dispatch((workW_+15)/16,(workH_+15)/16,1);
+        tracker_.uavBarrier(list,videoFrame_[parity].Get());
+        tracker_.transition(list,videoFrame_[parity].Get(),D3D12_RESOURCE_STATE_COMMON);
+    }
     auto* fgMotion=desc_.fgMotionProbe?desc_.fgMotionProbe:
         haveFlow&&desc_.fgUsesFlow()?(flowRefine_?fgBaseFlow_.Get():baseFlow_.Get()):nrZeroMotion_.Get();
     if(hudProtect_){
@@ -5296,7 +5317,7 @@ void EnhanceGraph::shutdown()
     nrInstances_.clear();
     for(auto& layer:nrAutoPool_)layer.reset();nrAutoLevel_=0;nrAutoPoolReady_=nrAutoResetPending_=false;
     residualRgba_.Reset();preSrProtectionRgba_.Reset();interNrProtectionRgba_.Reset();nrFlow_.Reset();baseFlow_.Reset();
-    fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowRefine_=flowConsistency_=false;
+    fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;flowRefine_=flowConsistency_=false;
     fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;
     for(unsigned i=0;i<kGeneratedPoolSlots;++i){if(fgDisableMapped_[i]&&fgDisableReadback_[i]){D3D12_RANGE written{0,0};fgDisableReadback_[i]->Unmap(0,&written);}fgDisableMapped_[i]=nullptr;fgDisable_[i].Reset();fgDisableReadback_[i].Reset();generatedLeases_[i].reset();genFrame_[i].Reset();}for(auto& lease:realLeases_)lease.reset();fgDisableInit_.Reset();
     encPass_ = ComputePass{};
