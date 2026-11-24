@@ -110,8 +110,8 @@ bool AmfFrcBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue, 
     lowPower = lowPower && uint64_t(width) * height >= uint64_t(1280) * 720;
     p.frc->SetProperty(AMF_FRC_ENGINE_TYPE, amf_int64(FRC_ENGINE_DX12));
     p.frc->SetProperty(AMF_FRC_MODE, amf_int64(FRC_ONLY_INTERPOLATED));
-    // Blend the two real frames where the motion is unsure (AMD's default), unless the
-    // user prefers the motion-compensated frame everywhere.
+    // Low interpolation confidence: blend the two real frames (AMD's default), or
+    // repeat a real frame when the user turned the blend off.
     p.frc->SetProperty(AMF_FRC_ENABLE_FALLBACK, options.blendFallback);
     p.frc->SetProperty(AMF_FRC_INDICATOR, false);
     p.frc->SetProperty(AMF_FRC_PROFILE, profile);
@@ -137,7 +137,7 @@ bool AmfFrcBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue, 
     }
     p.queue = queue; p.width = width; p.height = height; p.ready = true;
     log::info("amf-frc", std::format("ready runtime={} {}x{} format={} profile={}{} fallback={} motionSearch={} futureFrame=0 mode=only-interpolated initMs={:.1f}",
-        p.version, width, height, int(format), profileName, options.profile ? " (user)" : "", options.blendFallback ? "blend" : "off",
+        p.version, width, height, int(format), profileName, options.profile ? " (user)" : "", options.blendFallback ? "blend" : "duplicate",
         lowPower ? "performance" : "native",
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()));
     return true;

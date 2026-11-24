@@ -18670,19 +18670,6 @@
    "ru": "Включи питание"
   },
   {
-   "zh": "开（默认）：运动不确定处混合前后两帧，可能出现重影。关：始终用运动补偿帧，减少重影但可能出现扭曲",
-   "src": "qml/AmdFrcControls.qml",
-   "zh-TW": "開（預設）：運動不確定處混合前後兩幀，可能出現重影。關：一律使用運動補償幀，減少重影但可能出現扭曲",
-   "en": "On (default): where motion is unsure, the two real frames are blended, which can show double images. Off: always uses the motion-compensated frame, fewer double images but possible warping",
-   "ja": "オン（既定）：動きが不確かな箇所は前後 2 フレームをブレンドし、二重像が出ることがあります。オフ：常に動き補償フレームを使い、二重像は減りますが歪みが出ることがあります",
-   "ko": "켜기(기본): 움직임이 불확실한 곳은 앞뒤 두 프레임을 혼합해 이중상이 생길 수 있습니다. 끄기: 항상 모션 보정 프레임을 사용해 이중상은 줄지만 왜곡이 생길 수 있습니다",
-   "es": "Activado (predeterminado): donde el movimiento es dudoso se mezclan los dos fotogramas reales, lo que puede mostrar imágenes dobles. Desactivado: siempre usa el fotograma compensado, menos imágenes dobles pero posibles deformaciones",
-   "fr": "Activé (par défaut) : là où le mouvement est incertain, les deux images réelles sont mélangées, ce qui peut créer des images doubles. Désactivé : utilise toujours l'image compensée en mouvement, moins d'images doubles mais des déformations possibles",
-   "de": "Ein (Standard): Wo die Bewegung unsicher ist, werden die beiden echten Bilder überblendet, was Doppelbilder zeigen kann. Aus: immer das bewegungskompensierte Bild, weniger Doppelbilder, aber mögliche Verzerrungen",
-   "pt-BR": "Ligado (padrão): onde o movimento é incerto, os dois quadros reais são misturados, o que pode gerar imagens duplas. Desligado: usa sempre o quadro compensado, menos imagens duplas mas possíveis distorções",
-   "ru": "Вкл. (по умолчанию): где движение неясно, два реальных кадра смешиваются, возможны двойные изображения. Выкл.: всегда кадр с компенсацией движения, меньше двоения, но возможны искажения"
-  },
-  {
    "zh": "引擎异常，请查看诊断",
    "src": "src/engine/EngineController.cpp",
    "zh-TW": "引擎異常，請查看診斷",
@@ -21645,6 +21632,19 @@
    "de": "Ungültige Einführstelle",
    "pt-BR": "Ponto de inserção inválido",
    "ru": "Недействительный пункт введения"
+  },
+  {
+   "zh": "插帧把握不足时的处理。开（默认）：混合前后两帧，可能看到重影。关：重复一张真实帧，没有重影，但会短暂顿一下",
+   "src": "qml/AmdFrcControls.qml",
+   "zh-TW": "插幀把握不足時的處理。開（預設）：混合前後兩幀，可能看到重影。關：重複一張真實幀，沒有重影，但會短暫頓一下",
+   "en": "What to show when interpolation confidence is low. On (default): blend the two real frames, which can look like a double image. Off: repeat a real frame, no double image but a brief judder",
+   "ja": "補間の確信度が低いときの処理。オン（既定）：前後 2 フレームをブレンドし、二重像に見えることがあります。オフ：実フレームを繰り返し、二重像は出ませんが一瞬カクつきます",
+   "ko": "보간 신뢰도가 낮을 때의 처리. 켜기(기본): 앞뒤 두 프레임을 혼합해 이중상처럼 보일 수 있습니다. 끄기: 실제 프레임을 반복해 이중상은 없지만 잠깐 끊겨 보입니다",
+   "es": "Qué mostrar cuando la confianza de la interpolación es baja. Activado (predeterminado): mezcla los dos fotogramas reales, lo que puede verse como imagen doble. Desactivado: repite un fotograma real, sin imagen doble pero con un breve tirón",
+   "fr": "Ce qui est affiché quand l'interpolation est peu fiable. Activé (par défaut) : mélange des deux images réelles, qui peut donner une image double. Désactivé : répétition d'une image réelle, sans image double mais avec un bref à-coup",
+   "de": "Was bei geringer Interpolationssicherheit gezeigt wird. Ein (Standard): die beiden echten Bilder werden überblendet, was wie ein Doppelbild wirken kann. Aus: ein echtes Bild wird wiederholt, kein Doppelbild, aber ein kurzes Ruckeln",
+   "pt-BR": "O que mostrar quando a confiança da interpolação é baixa. Ligado (padrão): mistura os dois quadros reais, o que pode parecer uma imagem dupla. Desligado: repete um quadro real, sem imagem dupla, mas com um breve tranco",
+   "ru": "Что показывать при низкой уверенности интерполяции. Вкл. (по умолчанию): смешивание двух реальных кадров, возможно двоение. Выкл.: повтор реального кадра, без двоения, но с кратким подёргиванием"
   },
   {
    "zh": "搜索完成，未发现 PS5；确认同一局域网，或手动填写 IP。",
@@ -32568,17 +32568,17 @@
    "ru": "Автоматический: повторно используется только тогда, когда предварительный просмотр не может идти в ногу, максимум 1 кадр в 2. Ручной: фиксированное соотношение"
   },
   {
-   "zh": "自动：独显及 1440p 以上用 SUPER，其他用 HIGH。SUPER 跟得住快速转镜，GPU 占用稍高",
+   "zh": "自动：独显及 1440p 以上用 SUPER，其他用 HIGH。SUPER 的分层运动搜索层级更多，更跟得住快速转镜，GPU 占用稍高",
    "src": "qml/AmdFrcControls.qml",
-   "zh-TW": "自動：獨顯及 1440p 以上用 SUPER，其他用 HIGH。SUPER 跟得上快速轉鏡，GPU 佔用稍高",
-   "en": "Auto: SUPER on dedicated GPUs and from 1440p up, HIGH otherwise. SUPER keeps up with fast camera pans at slightly higher GPU load",
-   "ja": "自動：専用 GPU と 1440p 以上は SUPER、それ以外は HIGH。SUPER は速いカメラ移動に追従しますが、GPU 負荷がやや高くなります",
-   "ko": "자동: 외장 GPU와 1440p 이상은 SUPER, 그 외는 HIGH. SUPER는 빠른 카메라 회전을 따라가지만 GPU 사용량이 약간 높습니다",
-   "es": "Automático: SUPER en GPU dedicadas y desde 1440p, HIGH en el resto. SUPER sigue los giros rápidos de cámara con algo más de carga de GPU",
-   "fr": "Automatique : SUPER sur carte dédiée et à partir de 1440p, HIGH sinon. SUPER suit les panoramiques rapides, pour une charge GPU un peu plus élevée",
-   "de": "Automatisch: SUPER auf dedizierten GPUs und ab 1440p, sonst HIGH. SUPER folgt schnellen Kameraschwenks bei etwas höherer GPU-Last",
-   "pt-BR": "Automático: SUPER em GPUs dedicadas e a partir de 1440p, HIGH nos demais. SUPER acompanha giros rápidos de câmera com carga de GPU um pouco maior",
-   "ru": "Авто: SUPER на дискретных GPU и от 1440p, иначе HIGH. SUPER успевает за быстрыми поворотами камеры при чуть большей нагрузке на GPU"
+   "zh-TW": "自動：獨顯及 1440p 以上用 SUPER，其他用 HIGH。SUPER 的分層運動搜尋層級更多，更跟得上快速轉鏡，GPU 佔用稍高",
+   "en": "Auto: SUPER on dedicated GPUs and from 1440p up, HIGH otherwise. SUPER uses more levels of hierarchical motion search and keeps up better with fast camera pans, at slightly higher GPU load",
+   "ja": "自動：専用 GPU と 1440p 以上は SUPER、それ以外は HIGH。SUPER は階層的モーション探索の段数が多く、速いカメラ移動に追従しやすい反面、GPU 負荷がやや高くなります",
+   "ko": "자동: 외장 GPU와 1440p 이상은 SUPER, 그 외는 HIGH. SUPER는 계층적 모션 탐색 단계가 더 많아 빠른 카메라 회전을 더 잘 따라가지만 GPU 사용량이 약간 높습니다",
+   "es": "Automático: SUPER en GPU dedicadas y desde 1440p, HIGH en el resto. SUPER usa más niveles de búsqueda de movimiento jerárquica y sigue mejor los giros rápidos de cámara, con algo más de carga de GPU",
+   "fr": "Automatique : SUPER sur carte dédiée et à partir de 1440p, HIGH sinon. SUPER utilise plus de niveaux de recherche de mouvement hiérarchique et suit mieux les panoramiques rapides, pour une charge GPU un peu plus élevée",
+   "de": "Automatisch: SUPER auf dedizierten GPUs und ab 1440p, sonst HIGH. SUPER nutzt mehr Stufen der hierarchischen Bewegungssuche und folgt schnellen Kameraschwenks besser, bei etwas höherer GPU-Last",
+   "pt-BR": "Automático: SUPER em GPUs dedicadas e a partir de 1440p, HIGH nos demais. SUPER usa mais níveis de busca de movimento hierárquica e acompanha melhor giros rápidos de câmera, com carga de GPU um pouco maior",
+   "ru": "Авто: SUPER на дискретных GPU и от 1440p, иначе HIGH. SUPER использует больше уровней иерархического поиска движения и лучше успевает за быстрыми поворотами камеры при чуть большей нагрузке на GPU"
   },
   {
    "zh": "自动：跟随直播软件为摄像机选的帧率（如 OBS 设 60 或 120），补帧 3X、4X 时按均匀时间挑帧；固定值为上限。SDR 视频输出，声音请单独采集；XeSS 显示端生成的帧不包含在内",

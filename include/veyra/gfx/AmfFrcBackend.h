@@ -12,9 +12,10 @@ struct AmfFrcOptions {
     // 0: automatic (SUPER on dedicated GPUs and from 1440p up, HIGH otherwise);
     // 1 LOW, 2 HIGH, 3 SUPER (AMF_FRC_PROFILE_TYPE + 1).
     uint32_t profile = 0;
-    // AMF_FRC_ENABLE_FALLBACK: where AMF is unsure of the motion it blends the two
-    // real frames (true, AMD's default). False always shows the motion-compensated
-    // frame: no double image on fast pans, but possible warping instead.
+    // AMF_FRC_ENABLE_FALLBACK, what AMF shows where its interpolation confidence is
+    // low: true blends the two real frames (AMD's default, can look like a double
+    // image), false repeats a real frame (no double image, a brief judder instead).
+    // FFmpeg's vf_frc_amf exposes the same property as fallback_mode blend/duplicate.
     bool blendFallback = true;
 };
 

@@ -565,7 +565,7 @@ struct EnhancementSettings {
     HudProtectMode hudProtect=HudProtectMode::Off;
     bool dynamicHud=false;
     // AMD FRC only (gfx::AmfFrcOptions): motion-search profile, and whether AMF blends
-    // the two real frames where it is unsure of the motion (AMD's default).
+    // the two real frames (AMD's default) or repeats one where its confidence is low.
     AmdFrcProfile amdFrcProfile=AmdFrcProfile::Auto;
     bool amdFrcBlendFallback=true;
     ContentRate content=ContentRate::Transport;
