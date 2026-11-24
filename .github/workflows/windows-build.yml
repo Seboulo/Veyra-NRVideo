@@ -185,6 +185,22 @@ jobs:
             }
           }
           Copy-Item "$env:VCToolsRedistDir\x64\Microsoft.VC143.CRT\*.dll" $stage
+          # find_package(OpenSSL) picks the runner's shared OpenSSL, so the exe imports
+          # libcrypto-3-x64.dll. Ship it next to the exe, from the install CMake used.
+          $sslInclude = (Select-String C:\b\CMakeCache.txt -Pattern '^OPENSSL_INCLUDE_DIR:PATH=(.+)$').Matches[0].Groups[1].Value
+          $sslRoot = Split-Path $sslInclude
+          $imports = (& dumpbin /nologo /dependents "$stage\veyra_qml_ui.exe") | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^(libcrypto|libssl)-.*\.dll$' }
+          foreach ($dll in $imports) {
+            $src = Get-ChildItem $sslRoot -Recurse -Filter $dll -File | Select-Object -First 1
+            if (-not $src) { throw "OpenSSL runtime $dll not found under $sslRoot" }
+            Copy-Item $src.FullName $stage
+            Write-Host "Packaged $dll from $($src.FullName)"
+          }
+          # Every non-system DLL the exe imports must be in the package.
+          $missing = (& dumpbin /nologo /dependents "$stage\veyra_qml_ui.exe") | ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -match '\.dll$' -and $_ -notmatch '^api-ms-win-' } |
+            Where-Object { -not (Test-Path (Join-Path $stage $_)) -and -not (Test-Path (Join-Path "$env:SystemRoot\System32" $_)) }
+          if ($missing) { throw "Package is missing imported DLLs: $($missing -join ', ')" }
           foreach ($f in 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'README_EN.md') { Copy-Item $f $stage }
           @'
           Veyra Windows CI build for development testing.
