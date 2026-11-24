@@ -73,8 +73,9 @@ void main(uint3 id : SV_DispatchThreadID)
         float cost = 0;
         [unroll] for (int j = 0; j < 9; ++j)
             cost += abs(current[j] - luma(previousColor[clamp(p + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
-        cost = cost / 9 + zeroBias;
-        if (cost < bestCost) { bestCost = cost; best = 0; }
+        cost /= 9;
+        // Biased to choose; the unbiased cost goes on to FlowFill's no-correspondence test.
+        if (cost + zeroBias < bestCost) { bestCost = cost; best = 0; }
     }
     float disagreement = 0;
     if ((flags & 1u) != 0) {
