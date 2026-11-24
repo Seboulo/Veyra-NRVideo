@@ -74,7 +74,8 @@ bool AmfFrcBackend::warmingUp() const {
 }
 const std::string& AmfFrcBackend::runtimeVersion() const { return p_->version; }
 
-bool AmfFrcBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue, uint32_t width, uint32_t height, DXGI_FORMAT format, bool lowPower) {
+bool AmfFrcBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue, uint32_t width, uint32_t height, DXGI_FORMAT format, bool lowPower,
+                               const AmfFrcOptions& options) {
 #ifdef VEYRA_HAS_AMF
     shutdown();
     auto& p = *p_;
@@ -99,15 +100,21 @@ bool AmfFrcBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue, 
     // Low-memory GPUs (lowPower, under 2 GiB) keep HIGH below 1440p.
     const bool large = uint64_t(width) * height > uint64_t(2560) * 1440;
     const bool superProfile = large || !lowPower;
+    // A profile picked in the UI replaces the automatic choice.
+    const amf_int64 profile = options.profile >= 1 && options.profile <= 3 ? amf_int64(options.profile - 1)
+        : amf_int64(superProfile ? FRC_PROFILE_SUPER : FRC_PROFILE_HIGH);
+    const char* profileName = profile == FRC_PROFILE_SUPER ? "super" : profile == FRC_PROFILE_HIGH ? "high" : "low";
     // The downscaled (performance) search returned the previous frame unchanged at
     // 640x360 while it interpolated from 960x540 up (probe on the Radeon iGPU,
     // 2026-11-14); small frames are cheap with the full-resolution search anyway.
     lowPower = lowPower && uint64_t(width) * height >= uint64_t(1280) * 720;
     p.frc->SetProperty(AMF_FRC_ENGINE_TYPE, amf_int64(FRC_ENGINE_DX12));
     p.frc->SetProperty(AMF_FRC_MODE, amf_int64(FRC_ONLY_INTERPOLATED));
-    p.frc->SetProperty(AMF_FRC_ENABLE_FALLBACK, true); // blend, not repeat, where the motion is unsure
+    // Blend the two real frames where the motion is unsure (AMD's default), unless the
+    // user prefers the motion-compensated frame everywhere.
+    p.frc->SetProperty(AMF_FRC_ENABLE_FALLBACK, options.blendFallback);
     p.frc->SetProperty(AMF_FRC_INDICATOR, false);
-    p.frc->SetProperty(AMF_FRC_PROFILE, amf_int64(superProfile ? FRC_PROFILE_SUPER : FRC_PROFILE_HIGH));
+    p.frc->SetProperty(AMF_FRC_PROFILE, profile);
     p.frc->SetProperty(AMF_FRC_MV_SEARCH_MODE, amf_int64(lowPower ? FRC_MV_SEARCH_PERFORMANCE : FRC_MV_SEARCH_NATIVE));
     // The future frame would add one more frame of delay and shift the output a pair later.
     p.frc->SetProperty(AMF_FRC_USE_FUTURE_FRAME, false);
@@ -129,12 +136,13 @@ bool AmfFrcBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue, 
         p.input[i]->SetPrivateDataInterface(AMFFenceGUID, p.inputFence[i].Get());
     }
     p.queue = queue; p.width = width; p.height = height; p.ready = true;
-    log::info("amf-frc", std::format("ready runtime={} {}x{} format={} profile={} motionSearch={} futureFrame=0 mode=only-interpolated initMs={:.1f}",
-        p.version, width, height, int(format), superProfile ? "super" : "high", lowPower ? "performance" : "native",
+    log::info("amf-frc", std::format("ready runtime={} {}x{} format={} profile={}{} fallback={} motionSearch={} futureFrame=0 mode=only-interpolated initMs={:.1f}",
+        p.version, width, height, int(format), profileName, options.profile ? " (user)" : "", options.blendFallback ? "blend" : "off",
+        lowPower ? "performance" : "native",
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()));
     return true;
 #else
-    (void)device; (void)queue; (void)width; (void)height; (void)format; (void)lowPower;
+    (void)device; (void)queue; (void)width; (void)height; (void)format; (void)lowPower; (void)options;
     log::error("amf-frc", "this build has no AMF SDK headers");
     return false;
 #endif

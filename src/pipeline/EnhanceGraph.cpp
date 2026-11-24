@@ -1834,7 +1834,8 @@ bool EnhanceGraph::initAmfFrc()
     // APUs (little dedicated memory) take the downscaled motion search AMD suggests for them.
     const bool lowPower=context_.adapter().dedicatedVideoMemoryBytes<(uint64_t(2)<<30);
     amfFrc_=std::make_unique<gfx::AmfFrcBackend>();
-    if(!amfFrc_->initialize(context_.device(),ring_->queue(),workW_,workH_,outputFormat(),lowPower))return false;
+    gfx::AmfFrcOptions options;options.profile=uint32_t(desc_.amdFrcProfile);options.blendFallback=desc_.amdFrcBlendFallback;
+    if(!amfFrc_->initialize(context_.device(),ring_->queue(),workW_,workH_,outputFormat(),lowPower,options))return false;
     fgCapsAvailable_=true;fgMultiFrameMax_=1;
     failedBackend_=engine::FailedBackend::None;
     return true;
@@ -4948,6 +4949,9 @@ bool EnhanceGraph::applySettings(const engine::EnhancementSettings& s){
     if((presentSinkFg()||desc_.enableFg)&&desc_.fgUsesFlow()&&s.fgMotionRefine!=desc_.fgMotionRefine)return false;
     // The DLSS-G performance mode selects the runtime and a create-time parameter.
     if(desc_.enableFg&&desc_.frameGenerationBackend==engine::FrameGenerationBackend::Dlss&&s.dlssgLite!=desc_.dlssgLite)return false;
+    // AMD FRC takes its profile and fallback at Init.
+    if(desc_.enableFg&&desc_.frameGenerationBackend==engine::FrameGenerationBackend::AmdFrc&&
+       (s.amdFrcProfile!=desc_.amdFrcProfile||s.amdFrcBlendFallback!=desc_.amdFrcBlendFallback))return false;
     // DLSS allocates multiplier-specific feature/output resources.
     // XeSS has a fixed 2X proxy swapchain contract. Settings callers must
     // rebuild instead of accepting a change that cannot take effect in place.
@@ -5032,7 +5036,7 @@ bool EnhanceGraph::applySettings(const engine::EnhancementSettings& s){
     desc_.beauty=nextNr.beauty;desc_.beautyDetection=nextNr.beautyDetection;
     for(size_t i=0;i<beautyPasses_.size();++i)if(beautyPasses_[i])beautyPasses_[i]->refresh(desc_.beauty[i]);
     if(faceTracker_)faceTracker_->configure(desc_.beautyDetection,beautyMinConfidence());
-    desc_.contentRate=s.content;desc_.model=s.model;desc_.residual=s.residual;desc_.protection=s.protection;desc_.exclusion=s.exclusion;desc_.hudProtect=s.hudProtect;desc_.settingsRevision=s.revision;
+    desc_.contentRate=s.content;desc_.model=s.model;desc_.residual=s.residual;desc_.protection=s.protection;desc_.exclusion=s.exclusion;desc_.hudProtect=s.hudProtect;desc_.amdFrcProfile=s.amdFrcProfile;desc_.amdFrcBlendFallback=s.amdFrcBlendFallback;desc_.settingsRevision=s.revision;
     desc_.nrHoldStrength=s.nrHoldStrength;desc_.nrHoldTolerance=s.nrHoldTolerance;
     if(desc_.nrReusePreview&&s.nr){
         const auto previousReuse=desc_.nrReuse;desc_.nrReuse=s.nrReuse;

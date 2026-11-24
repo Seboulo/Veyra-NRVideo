@@ -299,6 +299,28 @@ void QmlPlayerBridge::setHudProtect(int value) {
     if(!impl_->savePrefs())veyra::log::warn("ui-prefs","HUD protection not saved");
     emit settingsChanged();
 }
+int QmlPlayerBridge::amdFrcProfile() const { return int(settings().amdFrcProfile); }
+void QmlPlayerBridge::setAmdFrcProfile(int value) {
+    if(value<0||value>int(engine::AmdFrcProfile::Super))return;
+    auto s=settings();
+    const auto profile=engine::AmdFrcProfile(value);
+    if(s.amdFrcProfile==profile)return;
+    s.amdFrcProfile=profile;
+    if(!impl_->commit(std::move(s))){emit settingsChanged();return;}
+    impl_->prefs[QStringLiteral("amdFrcProfile")]=value;
+    if(!impl_->savePrefs())veyra::log::warn("ui-prefs","AMD FRC profile not saved");
+    emit settingsChanged();
+}
+bool QmlPlayerBridge::amdFrcBlend() const { return settings().amdFrcBlendFallback; }
+void QmlPlayerBridge::setAmdFrcBlend(bool value) {
+    auto s=settings();
+    if(s.amdFrcBlendFallback==value)return;
+    s.amdFrcBlendFallback=value;
+    if(!impl_->commit(std::move(s))){emit settingsChanged();return;}
+    impl_->prefs[QStringLiteral("amdFrcBlend")]=value;
+    if(!impl_->savePrefs())veyra::log::warn("ui-prefs","AMD FRC fallback not saved");
+    emit settingsChanged();
+}
 bool QmlPlayerBridge::dynamicHud() const { return settings().dynamicHud; }
 void QmlPlayerBridge::setDynamicHud(bool value) {
     auto s = settings();

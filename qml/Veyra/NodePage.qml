@@ -1734,6 +1734,7 @@ VPage {
                     VSwitch { objectName: "node-hud-lock"; checked: veyra.hudLock; onToggled: checked => veyra.hudLock = checked }
                 }
                 HudProtectControl { objectName: "node-hud-protect" }
+                AmdFrcControls { objectName: "node-amd-frc"; namePrefix: "node" }
                 DynamicHudRow { backend: veyra; namePrefix: "node" }
                 VRow {
                     label: qsTr("补帧运动来源")

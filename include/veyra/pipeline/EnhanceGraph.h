@@ -162,6 +162,8 @@ struct EnhanceGraphDesc {
     bool hudLock=false; // Live HUD Lock (HudLock.h, from PushFPS), graph frame generation only
     engine::HudProtectMode hudProtect=engine::HudProtectMode::Off;
     bool dynamicHud=false;
+    engine::AmdFrcProfile amdFrcProfile=engine::AmdFrcProfile::Auto; // AMD FRC only
+    bool amdFrcBlendFallback=true;
     uint64_t settingsRevision=1;
     engine::FlowQuality flowQuality=engine::FlowQuality::Balanced;
     engine::OpticalFlowBackend opticalFlowBackend=engine::OpticalFlowBackend::Nvidia;

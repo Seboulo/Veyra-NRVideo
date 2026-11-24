@@ -47,6 +47,9 @@ inline bool validNrReuseMode(NrReuseMode v) {
 // AmdFrc: AMD AMF FRC, the video frame interpolation of the AMD driver (gfx::AmfFrcBackend).
 // Rife: RIFE through ONNX Runtime DirectML from runtime/rife (gfx::RifeDmlBackend).
 enum class FrameGenerationBackend { Dlss = 0, XeSS = 1, Fsr = 2, Fsr4 = 3, Vfg = 4, Anr = 5, AmdFrc = 6, Rife = 7 };
+// AMD FRC motion-search profile (UI "AMD FRC 运动搜索"). Auto keeps the built-in choice:
+// SUPER on dedicated GPUs and from 1440p up, HIGH otherwise (gfx::AmfFrcOptions).
+enum class AmdFrcProfile : uint32_t { Auto = 0, Low = 1, High = 2, Super = 3 };
 constexpr bool fsrFrameGeneration(FrameGenerationBackend backend) {
     return backend == FrameGenerationBackend::Fsr || backend == FrameGenerationBackend::Fsr4;
 }
@@ -561,6 +564,10 @@ struct EnhancementSettings {
     bool hudLock=false;
     HudProtectMode hudProtect=HudProtectMode::Off;
     bool dynamicHud=false;
+    // AMD FRC only (gfx::AmfFrcOptions): motion-search profile, and whether AMF blends
+    // the two real frames where it is unsure of the motion (AMD's default).
+    AmdFrcProfile amdFrcProfile=AmdFrcProfile::Auto;
+    bool amdFrcBlendFallback=true;
     ContentRate content=ContentRate::Transport;
     AudioSyncMode audioSync=AudioSyncMode::Automatic;
     int32_t audioOffsetMs=0;
@@ -646,6 +653,10 @@ struct EnhancementSettings {
             active.dynamicHud=defaults.dynamicHud;
         }
         if(multiplier<=1)active.hudProtect=defaults.hudProtect;
+        if(!(multiplier>1&&frameGenerationBackend==FrameGenerationBackend::AmdFrc)){
+            active.amdFrcProfile=defaults.amdFrcProfile;
+            active.amdFrcBlendFallback=defaults.amdFrcBlendFallback;
+        }
         return active;
     }
     bool sameActiveVideoParameters(const EnhancementSettings& other) const {
@@ -718,6 +729,7 @@ struct EnhancementSettings {
         auto range=[](float v,float hi){return std::isfinite(v)&&v>=0&&v<=hi;};
         if(auto error=protection.validate();!error.empty())return error;
         if(hudProtect>HudProtectMode::Regions)return "invalid HUD protection mode";
+        if(amdFrcProfile>AmdFrcProfile::Super)return "invalid AMD FRC profile";
         if(auto error=exclusion.validate();!error.empty())return error;
         if(!revision)return "settingsRevision must be nonzero";
         if(!validNrRuntime(nrRuntime))return "invalid NR runtime";

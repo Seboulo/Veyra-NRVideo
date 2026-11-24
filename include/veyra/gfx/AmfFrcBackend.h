@@ -6,6 +6,18 @@
 #include <string>
 
 namespace veyra::gfx {
+// User choices for AMF FRC (UI "AMD FRC" rows). The defaults keep the
+// behaviour Veyra had before these options existed.
+struct AmfFrcOptions {
+    // 0: automatic (SUPER on dedicated GPUs and from 1440p up, HIGH otherwise);
+    // 1 LOW, 2 HIGH, 3 SUPER (AMF_FRC_PROFILE_TYPE + 1).
+    uint32_t profile = 0;
+    // AMF_FRC_ENABLE_FALLBACK: where AMF is unsure of the motion it blends the two
+    // real frames (true, AMD's default). False always shows the motion-compensated
+    // frame: no double image on fast pans, but possible warping instead.
+    bool blendFallback = true;
+};
+
 // AMD AMF FRC: the video frame interpolation in the AMF runtime that AMD drivers
 // install (System32\amfrt64.dll; built against the AMF SDK headers, MIT). It runs
 // on its own queues of the same D3D12 device. Textures cross queues through AMF's
@@ -28,7 +40,8 @@ public:
     // An AMD driver's AMF runtime is installed (file check only, nothing loaded).
     static bool runtimeInstalled();
     // lowPower: the downscaled motion search AMD suggests for APUs and low-end GPUs.
-    bool initialize(ID3D12Device*, ID3D12CommandQueue*, uint32_t width, uint32_t height, DXGI_FORMAT, bool lowPower);
+    bool initialize(ID3D12Device*, ID3D12CommandQueue*, uint32_t width, uint32_t height, DXGI_FORMAT, bool lowPower,
+                    const AmfFrcOptions& options = {});
     // `color` is in COPY_SOURCE; the list runs on the queue given to initialize().
     bool capture(ID3D12GraphicsCommandList*, ID3D12Resource* color);
     // After the list holding capture() was submitted. reset drops AMF's history

@@ -296,6 +296,17 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
                 changed=true;
             }
         }
+        if(p.contains(QStringLiteral("amdFrcProfile"))){
+            const int profile=p.value(QStringLiteral("amdFrcProfile"),-1).toInt();
+            if(profile>=0&&profile<=int(engine::AmdFrcProfile::Super)&&int(s.amdFrcProfile)!=profile){
+                s.amdFrcProfile=engine::AmdFrcProfile(profile);
+                changed=true;
+            }
+        }
+        if(p.contains(QStringLiteral("amdFrcBlend"))){
+            const bool on=p.value(QStringLiteral("amdFrcBlend")).toBool();
+            if(s.amdFrcBlendFallback!=on){s.amdFrcBlendFallback=on;changed=true;}
+        }
         if (p.contains(QStringLiteral("dynamicHud"))) {
             const bool on = p.value(QStringLiteral("dynamicHud")).toBool();
             if (s.dynamicHud != on) { s.dynamicHud = on; changed = true; }

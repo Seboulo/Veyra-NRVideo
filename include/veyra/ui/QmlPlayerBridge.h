@@ -478,6 +478,9 @@ class QmlPlayerBridge : public QObject {
     Q_PROPERTY(bool pacingRepair READ pacingRepair WRITE setPacingRepair NOTIFY settingsChanged)
     Q_PROPERTY(bool hudLock READ hudLock WRITE setHudLock NOTIFY settingsChanged)
     Q_PROPERTY(int hudProtect READ hudProtect WRITE setHudProtect NOTIFY settingsChanged)
+    // AMD FRC options (engine::AmdFrcProfile, AMF fallback blend), kept in shell preferences.
+    Q_PROPERTY(int amdFrcProfile READ amdFrcProfile WRITE setAmdFrcProfile NOTIFY settingsChanged)
+    Q_PROPERTY(bool amdFrcBlend READ amdFrcBlend WRITE setAmdFrcBlend NOTIFY settingsChanged)
     Q_PROPERTY(bool dynamicHud READ dynamicHud WRITE setDynamicHud NOTIFY settingsChanged)
     Q_PROPERTY(bool dlssgLiteAvailable READ dlssgLiteAvailable CONSTANT)
     Q_PROPERTY(QString dlssgLiteHint READ dlssgLiteHint NOTIFY snapshotChanged)
@@ -1189,6 +1192,10 @@ public:
     void setHudLock(bool value);
     int hudProtect() const;
     void setHudProtect(int value);
+    int amdFrcProfile() const;
+    void setAmdFrcProfile(int value);
+    bool amdFrcBlend() const;
+    void setAmdFrcBlend(bool value);
     bool dynamicHud() const;
     void setDynamicHud(bool value);
     bool dlssgLiteAvailable() const;

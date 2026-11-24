@@ -2045,6 +2045,7 @@ VPage {
                                 }
                             }
                             HudProtectControl { objectName: "list-hud-protect" }
+                            AmdFrcControls { objectName: "list-amd-frc"; namePrefix: "list" }
                             DynamicHudRow { backend: veyra; namePrefix: "list" }
                             VSubGroup {
                                 id: fgFlowGroup

@@ -1613,6 +1613,19 @@
    "ru": "AMD FRC · интерполяция кадров видео · 2X"
   },
   {
+   "zh": "AMD FRC 不确定时混合",
+   "src": "qml/AmdFrcControls.qml",
+   "zh-TW": "AMD FRC 不確定時混合",
+   "en": "AMD FRC: blend when unsure",
+   "ja": "AMD FRC：不確実な箇所をブレンド",
+   "ko": "AMD FRC 불확실할 때 혼합",
+   "es": "AMD FRC: mezclar si hay dudas",
+   "fr": "AMD FRC : mélanger en cas de doute",
+   "de": "AMD FRC: bei Unsicherheit überblenden",
+   "pt-BR": "AMD FRC: misturar quando incerto",
+   "ru": "AMD FRC: смешивать при неуверенности"
+  },
+  {
    "zh": "AMD FRC 未能启用（需要 AMD 显卡和驱动自带的 AMF 运行库），已关闭补帧；原因见日志",
    "src": "src/engine/EngineController.cpp",
    "zh-TW": "AMD FRC 未能啟用（需要 AMD 顯示卡和驅動內建的 AMF 執行庫），已關閉補幀；原因見日誌",
@@ -1637,6 +1650,19 @@
    "de": "AMD FRC konnte nicht starten (benötigt eine AMD GPU und die AMF-Laufzeit von seinem Treiber); die vorherigen Einstellungen wurden wiederhergestellt",
    "pt-BR": "AMD Não foi possível iniciar o FRC (necessita de um AMD GPU e do tempo de execução AMF do seu controlador); as configurações anteriores foram restauradas",
    "ru": "AMD FRC не смог запустить (нужны AMD GPU и время выполнения AMF от его драйвера); предыдущие настройки были восстановлены"
+  },
+  {
+   "zh": "AMD FRC 运动搜索",
+   "src": "qml/AmdFrcControls.qml",
+   "zh-TW": "AMD FRC 運動搜尋",
+   "en": "AMD FRC motion search",
+   "ja": "AMD FRC モーション探索",
+   "ko": "AMD FRC 모션 탐색",
+   "es": "Búsqueda de movimiento de AMD FRC",
+   "fr": "Recherche de mouvement AMD FRC",
+   "de": "AMD-FRC-Bewegungssuche",
+   "pt-BR": "Busca de movimento do AMD FRC",
+   "ru": "Поиск движения AMD FRC"
   },
   {
    "zh": "AMD FSR 帧生成上限为 2X；请求未应用",
@@ -16942,7 +16968,7 @@
   },
   {
    "zh": "已关闭当前硬件或包不支持的效果，参数仍保留：",
-   "src": "src/ui/bridge/Preferences.cpp",
+   "src": "src/ui/QmlPlayerBridge.cpp",
    "zh-TW": "已關閉目前硬體或套件不支援的效果，參數仍保留：",
    "en": "Unavailable effects have been disabled; their parameters are preserved: ",
    "ja": "非対応の効果を無効にしました。設定値は保持されています：",
@@ -18642,6 +18668,19 @@
    "de": "Einschalten",
    "pt-BR": "Energia ligada",
    "ru": "Включи питание"
+  },
+  {
+   "zh": "开（默认）：运动不确定处混合前后两帧，可能出现重影。关：始终用运动补偿帧，减少重影但可能出现扭曲",
+   "src": "qml/AmdFrcControls.qml",
+   "zh-TW": "開（預設）：運動不確定處混合前後兩幀，可能出現重影。關：一律使用運動補償幀，減少重影但可能出現扭曲",
+   "en": "On (default): where motion is unsure, the two real frames are blended, which can show double images. Off: always uses the motion-compensated frame, fewer double images but possible warping",
+   "ja": "オン（既定）：動きが不確かな箇所は前後 2 フレームをブレンドし、二重像が出ることがあります。オフ：常に動き補償フレームを使い、二重像は減りますが歪みが出ることがあります",
+   "ko": "켜기(기본): 움직임이 불확실한 곳은 앞뒤 두 프레임을 혼합해 이중상이 생길 수 있습니다. 끄기: 항상 모션 보정 프레임을 사용해 이중상은 줄지만 왜곡이 생길 수 있습니다",
+   "es": "Activado (predeterminado): donde el movimiento es dudoso se mezclan los dos fotogramas reales, lo que puede mostrar imágenes dobles. Desactivado: siempre usa el fotograma compensado, menos imágenes dobles pero posibles deformaciones",
+   "fr": "Activé (par défaut) : là où le mouvement est incertain, les deux images réelles sont mélangées, ce qui peut créer des images doubles. Désactivé : utilise toujours l'image compensée en mouvement, moins d'images doubles mais des déformations possibles",
+   "de": "Ein (Standard): Wo die Bewegung unsicher ist, werden die beiden echten Bilder überblendet, was Doppelbilder zeigen kann. Aus: immer das bewegungskompensierte Bild, weniger Doppelbilder, aber mögliche Verzerrungen",
+   "pt-BR": "Ligado (padrão): onde o movimento é incerto, os dois quadros reais são misturados, o que pode gerar imagens duplas. Desligado: usa sempre o quadro compensado, menos imagens duplas mas possíveis distorções",
+   "ru": "Вкл. (по умолчанию): где движение неясно, два реальных кадра смешиваются, возможны двойные изображения. Выкл.: всегда кадр с компенсацией движения, меньше двоения, но возможны искажения"
   },
   {
    "zh": "引擎异常，请查看诊断",
@@ -31945,7 +31984,7 @@
   },
   {
    "zh": "自动",
-   "src": "qml/CaptureSourceDialog.qml",
+   "src": "qml/AmdFrcControls.qml",
    "zh-TW": "自動",
    "en": "Auto",
    "ja": "自動",
@@ -32527,6 +32566,19 @@
    "de": "Automatisch: Wird nur wiederverwendet, wenn die Vorschau nicht mithalten kann, höchstens 1 Frame in 2. Handbuch: ein festes Verhältnis",
    "pt-BR": "Automático: reutiliza apenas quando a visualização não consegue acompanhar, no máximo 1 quadro em 2. Manual: uma relação fixa",
    "ru": "Автоматический: повторно используется только тогда, когда предварительный просмотр не может идти в ногу, максимум 1 кадр в 2. Ручной: фиксированное соотношение"
+  },
+  {
+   "zh": "自动：独显及 1440p 以上用 SUPER，其他用 HIGH。SUPER 跟得住快速转镜，GPU 占用稍高",
+   "src": "qml/AmdFrcControls.qml",
+   "zh-TW": "自動：獨顯及 1440p 以上用 SUPER，其他用 HIGH。SUPER 跟得上快速轉鏡，GPU 佔用稍高",
+   "en": "Auto: SUPER on dedicated GPUs and from 1440p up, HIGH otherwise. SUPER keeps up with fast camera pans at slightly higher GPU load",
+   "ja": "自動：専用 GPU と 1440p 以上は SUPER、それ以外は HIGH。SUPER は速いカメラ移動に追従しますが、GPU 負荷がやや高くなります",
+   "ko": "자동: 외장 GPU와 1440p 이상은 SUPER, 그 외는 HIGH. SUPER는 빠른 카메라 회전을 따라가지만 GPU 사용량이 약간 높습니다",
+   "es": "Automático: SUPER en GPU dedicadas y desde 1440p, HIGH en el resto. SUPER sigue los giros rápidos de cámara con algo más de carga de GPU",
+   "fr": "Automatique : SUPER sur carte dédiée et à partir de 1440p, HIGH sinon. SUPER suit les panoramiques rapides, pour une charge GPU un peu plus élevée",
+   "de": "Automatisch: SUPER auf dedizierten GPUs und ab 1440p, sonst HIGH. SUPER folgt schnellen Kameraschwenks bei etwas höherer GPU-Last",
+   "pt-BR": "Automático: SUPER em GPUs dedicadas e a partir de 1440p, HIGH nos demais. SUPER acompanha giros rápidos de câmera com carga de GPU um pouco maior",
+   "ru": "Авто: SUPER на дискретных GPU и от 1440p, иначе HIGH. SUPER успевает за быстрыми поворотами камеры при чуть большей нагрузке на GPU"
   },
   {
    "zh": "自动：跟随直播软件为摄像机选的帧率（如 OBS 设 60 或 120），补帧 3X、4X 时按均匀时间挑帧；固定值为上限。SDR 视频输出，声音请单独采集；XeSS 显示端生成的帧不包含在内",
