@@ -39,7 +39,8 @@ cbuffer FlowRefineConstants : register(b0)
                      // vectors; 4 FidelityFX still warming up; 8 sub-pixel refinement;
                      // 16 small vectors around zero as well (needs zeroBias > 0);
                      // 32 camera (global) motion candidate and foreground preference;
-                     // 64 previousMotion holds last frame's motion (temporal candidate)
+                     // 64 previousMotion holds last frame's motion (temporal candidate);
+                     // 128 foreground candidate (globalMotion rows 2-3, needs 32)
     float zeroBias;  // > 0: also try the zero vector, at this extra cost; 0: off
 };
 
@@ -127,6 +128,24 @@ void main(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint index :
         cost = cost / 9 + tieBias;
         if (cost < bestCost) { bestCost = cost; best = global; }
     }
+    // Foreground motion (GlobalMotion.hlsl rows 2-3): the character's own vector, offered
+    // where no cell near a narrow part of it (the head) carries it.
+    bool haveForeground = false;
+    float2 foreground = 0;
+    float foregroundCost = 1e9;
+    if ((flags & 128u) != 0 && useGlobal) {
+        const uint2 raw = uint2(globalMotion[uint2(256, 2)], globalMotion[uint2(256, 3)]);
+        if (all(raw < 256u)) {
+            haveForeground = true;
+            foreground = float2(int2(raw) - 128);
+            const int2 q = p + int2(foreground);
+            float cost = 0;
+            [unroll] for (int j = 0; j < 9; ++j)
+                cost += abs(current[j] - luma(previousColor[clamp(q + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+            foregroundCost = cost / 9;
+            if (foregroundCost + tieBias < bestCost) { bestCost = foregroundCost + tieBias; best = foreground; }
+        }
+    }
     // Foreground preference (halo reduction in television frame-rate converters): when the
     // winner moves with the camera, a still or slow candidate that matches about as well
     // belongs to an object in front (a third-person character), not to the background.
@@ -159,6 +178,9 @@ void main(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint index :
                 if (nearCost < stillCost) { stillCost = nearCost; still = float2(kNear[n]); }
             }
         }
+        // The foreground candidate also competes as a still one when the camera won: it is the
+        // foreground the preference is for.
+        if (haveForeground && cameraWinner && foregroundCost < stillCost) { stillCost = foregroundCost; still = foreground; }
         // Biased to choose; the unbiased cost goes on to FlowFill's no-correspondence test.
         if (stillCost + stillBias < bestCost) { bestCost = stillCost; best = still; }
     }

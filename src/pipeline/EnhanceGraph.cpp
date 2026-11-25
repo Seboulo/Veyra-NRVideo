@@ -1226,7 +1226,7 @@ bool EnhanceGraph::createResources()
         fgBaseFlow_=makeTexture(context_.device(),workW_,workH_,DXGI_FORMAT_R16G16_FLOAT,true);
         if(!fgFlowRefined_||!fgFlowFilled_||!fgBaseFlow_)return false;
         if(flowMedian_){fgFlowMedian_=makeTexture(context_.device(),nvofW_,nvofH_,DXGI_FORMAT_R16G16_FLOAT,true);if(!fgFlowMedian_)return false;}
-        if(flowGlobal_){fgGlobalMotion_=makeTexture(context_.device(),257,2,DXGI_FORMAT_R32_UINT,true);if(!fgGlobalMotion_)return false;}
+        if(flowGlobal_){fgGlobalMotion_=makeTexture(context_.device(),257,4,DXGI_FORMAT_R32_UINT,true);if(!fgGlobalMotion_)return false;}
         if(flowTemporal_){fgFlowHistory_=makeTexture(context_.device(),nvofW_,nvofH_,DXGI_FORMAT_R16G16_FLOAT,false);if(!fgFlowHistory_)return false;}
         if(flowClaims_){
             fgFlowClaims_=makeTexture(context_.device(),nvofW_,nvofH_,DXGI_FORMAT_R32_UINT,true);
@@ -3988,13 +3988,14 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                     tracker_.transition(list,fgFlowRefined_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                     if(flowConsistency_)tracker_.transition(list,nvofReverseTex_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                     // Flags: 1 NVOF backward output, 2 FidelityFX vectors, 4 FidelityFX warming up.
-                    const uint32_t refineFlags=(flowConsistency_?1u:0u)|(amdOf_?2u:0u)|(amdOf_&&!amdOf_->warmedUp()?4u:0u)|(amdOf_&&flowSubPixel_?8u:0u)|(flowNearZero_?16u:0u)|(flowGlobal_?32u:0u)|(flowTemporal_&&fgFlowHistoryValid_?64u:0u);
+                    const uint32_t refineFlags=(flowConsistency_?1u:0u)|(amdOf_?2u:0u)|(amdOf_&&!amdOf_->warmedUp()?4u:0u)|(amdOf_&&flowSubPixel_?8u:0u)|(flowNearZero_?16u:0u)|(flowGlobal_?32u:0u)|(flowTemporal_&&fgFlowHistoryValid_?64u:0u)|(flowLayers_?128u:0u);
                     if(flowTemporal_)tracker_.transition(list,fgFlowHistory_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                     if(flowGlobal_){
                         // Clear, accumulate and resolve the median grid vector (the camera's motion).
                         tracker_.transition(list,fgGlobalMotion_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                        const UINT groups[3][2]={{17,1},{(rawW_+15)/16,(rawH_+15)/16},{1,1}};
-                        for(uint32_t mode=0;mode<3;++mode){
+                        // Modes 3-4 (layer rule): the foreground's own motion, rows 2-3.
+                        const UINT groups[5][2]={{17,1},{(rawW_+15)/16,(rawH_+15)/16},{1,1},{(rawW_+15)/16,(rawH_+15)/16},{1,1}};
+                        for(uint32_t mode=0;mode<(flowLayers_?5u:3u);++mode){
                             const float gc[8]={uintBits(rawW_),uintBits(rawH_),uintBits(mode),amdOf_?1.f:1.f/32.f,0,0,0,0};
                             globalMotionPass_.bind(list,gc,gpuHandleOf(globalMotionPass_,0).ptr,gpuHandleOf(globalMotionPass_,1).ptr);
                             list->Dispatch(groups[mode][0],groups[mode][1],1);
