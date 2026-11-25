@@ -1022,6 +1022,7 @@ private:
     float flowZeroBias_=0.f; // FlowRefine zero-vector candidate cost bias; 0 = off
     bool flowSubPixel_=false; // VEYRA_TEST_FLOW_SUBPIXEL=1: FlowRefine sub-pixel fit (FidelityFX)
     bool flowMedian_=false;   // VEYRA_TEST_FLOW_MEDIAN=1: FlowMedian after FlowFill
+    bool flowNearZero_=false; // VEYRA_TEST_FLOW_NEAR=1: FlowRefine tries the 12 vectors nearest zero
     ComPtr<ID3D12Resource> fgFlowClaims_,fgFlowAgreement_;
     uint64_t motionPreviousSource_[2]={},previousSource_=0;
     ComPtr<ID3D12Resource> proxyTex_;

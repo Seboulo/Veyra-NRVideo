@@ -34,7 +34,8 @@ cbuffer FlowRefineConstants : register(b0)
     uint gridSize;
     float tieBias;   // added to every neighbour cell's cost: the own cell wins ties
     uint flags;      // 1 reverseFlow holds NVOF's backward output (else w = 0); 2 FidelityFX
-                     // vectors; 4 FidelityFX still warming up; 8 sub-pixel refinement
+                     // vectors; 4 FidelityFX still warming up; 8 sub-pixel refinement;
+                     // 16 small vectors around zero as well (needs zeroBias > 0)
     float zeroBias;  // > 0: also try the zero vector, at this extra cost; 0: off
 };
 
@@ -87,6 +88,23 @@ void main(uint3 id : SV_DispatchThreadID)
         cost /= 9;
         // Biased to choose; the unbiased cost goes on to FlowFill's no-correspondence test.
         if (cost + zeroBias < bestCost) { bestCost = cost; best = 0; }
+        // A character that stays near the screen centre while the camera turns still moves a
+        // pixel or two (walk cycle, camera bob): the exact zero vector misses it and the
+        // background's vector wins. The "update" candidates of 3-D recursive search (de Haan
+        // et al. 1993) are small vectors around a candidate; here the 12 nearest to zero,
+        // at the same bias, so only a clearly better match leaves the background vector.
+        if ((flags & 16u) != 0) {
+            static const int2 kNear[12] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1),
+                int2(1, 1), int2(-1, 1), int2(1, -1), int2(-1, -1),
+                int2(2, 0), int2(-2, 0), int2(0, 2), int2(0, -2) };
+            [unroll] for (int n = 0; n < 12; ++n) {
+                float nearCost = 0;
+                [unroll] for (int j = 0; j < 9; ++j)
+                    nearCost += abs(current[j] - luma(previousColor[clamp(p + kNear[n] + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+                nearCost /= 9;
+                if (nearCost + zeroBias < bestCost) { bestCost = nearCost; best = float2(kNear[n]); }
+            }
+        }
     }
     // FidelityFX vectors are whole pixels. Interpolating halfway, a whole-pixel error
     // becomes a half-pixel misalignment of the two frames frame generation blends, which

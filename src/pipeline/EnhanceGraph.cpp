@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cwchar>
 #include <fstream>
 #include <thread>
 
@@ -903,6 +904,17 @@ bool EnhanceGraph::initialize(const EnhanceGraphDesc& desc)
     auto testSwitch=[](const wchar_t* name){wchar_t v[4]{};return GetEnvironmentVariableW(name,v,4)&&v[0]==L'1';};
     flowSubPixel_=flowRefine_&&fidelityFlow&&testSwitch(L"VEYRA_TEST_FLOW_SUBPIXEL");
     flowMedian_=flowRefine_&&testSwitch(L"VEYRA_TEST_FLOW_MEDIAN");
+    // VEYRA_TEST_FLOW_NEAR=1: small vectors around zero too. VEYRA_TEST_FLOW_ZERO_BIAS=<cost>:
+    // how much better (mean luma difference, 0..1) the zero candidates must match.
+    flowNearZero_=flowZeroBias_>0&&testSwitch(L"VEYRA_TEST_FLOW_NEAR");
+    {
+        wchar_t bias[16]{};
+        if(flowZeroBias_>0&&GetEnvironmentVariableW(L"VEYRA_TEST_FLOW_ZERO_BIAS",bias,16)){
+            wchar_t* end=nullptr;const float value=std::wcstof(bias,&end);
+            // Positive only: 0 turns the candidate off in FlowRefine.
+            if(end!=bias)flowZeroBias_=std::clamp(value,.0005f,.05f);
+        }
+    }
     uint64_t budget=0,usage=0;
     // Every NR layer allocates its own full set of textures, and a stabilised
     // layer adds two history/guide pairs on top. The stack is bounded (16 nodes),
@@ -1217,7 +1229,7 @@ bool EnhanceGraph::createResources()
         flowClaims_?"refined FidelityFX (FlowRefine+FlowClaim+FlowFill)":!flowRefine_?"validated flow":
         desc_.opticalFlowBackend==engine::OpticalFlowBackend::AmdFidelityFx?"refined FidelityFX (FlowRefine+FlowFill)":"refined NVOF (FlowRefine+FlowFill)"));
     if(flowRefine_)veyra::log::info("graph",std::format("FG motion zero-vector candidate={} bias={}",flowZeroBias_>0?"on":"off",flowZeroBias_));
-    if(flowRefine_&&(flowSubPixel_||flowMedian_))veyra::log::info("graph",std::format("FG motion sub-pixel={} weighted-median={} (test switches)",flowSubPixel_?"on":"off",flowMedian_?"on":"off"));
+    if(flowRefine_&&(flowSubPixel_||flowMedian_||flowNearZero_))veyra::log::info("graph",std::format("FG motion sub-pixel={} weighted-median={} near-zero={} (test switches)",flowSubPixel_?"on":"off",flowMedian_?"on":"off",flowNearZero_?"on":"off"));
     // Colour grade tables (v4): only allocated when the stage is enabled.
     colorActive_=desc_.color.enabled&&!desc_.nodeColor(0);
     if(colorActive_){
@@ -3943,7 +3955,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                     tracker_.transition(list,fgFlowRefined_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                     if(flowConsistency_)tracker_.transition(list,nvofReverseTex_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                     // Flags: 1 NVOF backward output, 2 FidelityFX vectors, 4 FidelityFX warming up.
-                    const uint32_t refineFlags=(flowConsistency_?1u:0u)|(amdOf_?2u:0u)|(amdOf_&&!amdOf_->warmedUp()?4u:0u)|(amdOf_&&flowSubPixel_?8u:0u);
+                    const uint32_t refineFlags=(flowConsistency_?1u:0u)|(amdOf_?2u:0u)|(amdOf_&&!amdOf_->warmedUp()?4u:0u)|(amdOf_&&flowSubPixel_?8u:0u)|(flowNearZero_?16u:0u);
                     const float rc[8]={uintBits(rawW_),uintBits(rawH_),uintBits(nvofW_),uintBits(nvofH_),uintBits(selectedGrid_),.004f,uintBits(refineFlags),flowZeroBias_};
                     flowRefinePass_.bind(list,rc,gpuHandleOf(flowRefinePass_,0).ptr,gpuHandleOf(flowRefinePass_,5).ptr);
                     list->Dispatch((nvofW_+15)/16,(nvofH_+15)/16,1);
@@ -5406,7 +5418,7 @@ void EnhanceGraph::shutdown()
     for(auto& layer:nrAutoPool_)layer.reset();nrAutoLevel_=0;nrAutoPoolReady_=nrAutoResetPending_=false;
     residualRgba_.Reset();preSrProtectionRgba_.Reset();interNrProtectionRgba_.Reset();nrFlow_.Reset();baseFlow_.Reset();
     fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=false;rcasPass_={};rcasScratch_.Reset();rcasSharpness_=0.f;flowRefine_=flowConsistency_=false;
-    fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;fgFlowMedian_.Reset();flowMedianPass_={};flowMedian_=flowSubPixel_=false;
+    fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;fgFlowMedian_.Reset();flowMedianPass_={};flowMedian_=flowSubPixel_=flowNearZero_=false;
     for(unsigned i=0;i<kGeneratedPoolSlots;++i){if(fgDisableMapped_[i]&&fgDisableReadback_[i]){D3D12_RANGE written{0,0};fgDisableReadback_[i]->Unmap(0,&written);}fgDisableMapped_[i]=nullptr;fgDisable_[i].Reset();fgDisableReadback_[i].Reset();generatedLeases_[i].reset();genFrame_[i].Reset();}for(auto& lease:realLeases_)lease.reset();fgDisableInit_.Reset();
     encPass_ = ComputePass{};
     blitPass_ = ComputePass{};hdrVideoSrPass_={};srPrescalePass_={};srResolvePass_={};firstSrRestorePass_={};
