@@ -1025,6 +1025,7 @@ private:
     bool flowNearZero_=false; // VEYRA_TEST_FLOW_NEAR=1: FlowRefine tries the 12 vectors nearest zero
     bool flowGlobal_=false;   // VEYRA_TEST_FLOW_GLOBAL=1: camera-motion candidate + foreground preference
     bool flowTemporal_=false; // VEYRA_TEST_FLOW_TEMPORAL=1: last frame's FG motion as a candidate
+    bool flowLayers_=false;   // VEYRA_TEST_FLOW_LAYERS=1: two-layer occlusion rule in FlowMedian
     bool fgFlowHistoryValid_=false;
     ComPtr<ID3D12Resource> fgFlowHistory_; // flow extent R16G16_FLOAT, last frame's final FG motion
     ComPtr<ID3D12Resource> fgFlowClaims_,fgFlowAgreement_;
