@@ -23,6 +23,7 @@ Texture2D<float4> previousColor : register(t1);  // flow extent
 Texture2D<float4> currentColor : register(t2);   // flow extent
 Texture2D<int2> reverseFlow : register(t3);      // grid extent, S10.5, previous->current (NVOF)
 Texture2D<uint> sceneChanges : register(t4);     // FidelityFX scene-change history at (1,0)
+Texture2D<uint> globalMotion : register(t5);     // GlobalMotion.hlsl: x = 256 holds median + 128
 RWTexture2D<float4> refined : register(u0);      // xy vector, z best cost, w forward-backward disagreement
 
 cbuffer FlowRefineConstants : register(b0)
@@ -35,7 +36,8 @@ cbuffer FlowRefineConstants : register(b0)
     float tieBias;   // added to every neighbour cell's cost: the own cell wins ties
     uint flags;      // 1 reverseFlow holds NVOF's backward output (else w = 0); 2 FidelityFX
                      // vectors; 4 FidelityFX still warming up; 8 sub-pixel refinement;
-                     // 16 small vectors around zero as well (needs zeroBias > 0)
+                     // 16 small vectors around zero as well (needs zeroBias > 0);
+                     // 32 camera (global) motion candidate and foreground preference
     float zeroBias;  // > 0: also try the zero vector, at this extra cost; 0: off
 };
 
@@ -81,18 +83,36 @@ void main(uint3 id : SV_DispatchThreadID)
         if (k != 4) cost += tieBias;
         if (cost < bestCost) { bestCost = cost; best = v; }
     }
-    if (zeroBias > 0) {
+    // Camera motion: one more candidate where the grid cells around are all wrong.
+    const bool useGlobal = (flags & 32u) != 0;
+    float2 global = 0;
+    if (useGlobal) {
+        global = float2(int(globalMotion[uint2(256, 0)]) - 128, int(globalMotion[uint2(256, 1)]) - 128);
+        const int2 q = p + int2(global);
         float cost = 0;
         [unroll] for (int j = 0; j < 9; ++j)
-            cost += abs(current[j] - luma(previousColor[clamp(p + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
-        cost /= 9;
-        // Biased to choose; the unbiased cost goes on to FlowFill's no-correspondence test.
-        if (cost + zeroBias < bestCost) { bestCost = cost; best = 0; }
+            cost += abs(current[j] - luma(previousColor[clamp(q + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+        cost = cost / 9 + tieBias;
+        if (cost < bestCost) { bestCost = cost; best = global; }
+    }
+    // Foreground preference (halo reduction in television frame-rate converters): when the
+    // winner moves with the camera, a still or slow candidate that matches about as well
+    // belongs to an object in front (a third-person character), not to the background.
+    // Flat background that takes it moves invisibly. Otherwise zero must win clearly.
+    const bool cameraWinner = useGlobal && dot(global, global) > 4 && length(best - global) <= 1.5;
+    const float stillBias = cameraWinner ? -.002 : zeroBias;
+    if (zeroBias > 0) {
+        // The best still candidate (zero, then the near ones) is compared once with the
+        // winner so far, so the bias applies once whatever its sign.
+        float stillCost = 0;
+        [unroll] for (int j = 0; j < 9; ++j)
+            stillCost += abs(current[j] - luma(previousColor[clamp(p + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+        stillCost /= 9;
+        float2 still = 0;
         // A character that stays near the screen centre while the camera turns still moves a
         // pixel or two (walk cycle, camera bob): the exact zero vector misses it and the
         // background's vector wins. The "update" candidates of 3-D recursive search (de Haan
-        // et al. 1993) are small vectors around a candidate; here the 12 nearest to zero,
-        // at the same bias, so only a clearly better match leaves the background vector.
+        // et al. 1993) are small vectors around a candidate; here the 12 nearest to zero.
         if ((flags & 16u) != 0) {
             static const int2 kNear[12] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1),
                 int2(1, 1), int2(-1, 1), int2(1, -1), int2(-1, -1),
@@ -102,9 +122,11 @@ void main(uint3 id : SV_DispatchThreadID)
                 [unroll] for (int j = 0; j < 9; ++j)
                     nearCost += abs(current[j] - luma(previousColor[clamp(p + kNear[n] + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
                 nearCost /= 9;
-                if (nearCost + zeroBias < bestCost) { bestCost = nearCost; best = float2(kNear[n]); }
+                if (nearCost < stillCost) { stillCost = nearCost; still = float2(kNear[n]); }
             }
         }
+        // Biased to choose; the unbiased cost goes on to FlowFill's no-correspondence test.
+        if (stillCost + stillBias < bestCost) { bestCost = stillCost; best = still; }
     }
     // FidelityFX vectors are whole pixels. Interpolating halfway, a whole-pixel error
     // becomes a half-pixel misalignment of the two frames frame generation blends, which

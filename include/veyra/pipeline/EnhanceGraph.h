@@ -1023,6 +1023,7 @@ private:
     bool flowSubPixel_=false; // VEYRA_TEST_FLOW_SUBPIXEL=1: FlowRefine sub-pixel fit (FidelityFX)
     bool flowMedian_=false;   // VEYRA_TEST_FLOW_MEDIAN=1: FlowMedian after FlowFill
     bool flowNearZero_=false; // VEYRA_TEST_FLOW_NEAR=1: FlowRefine tries the 12 vectors nearest zero
+    bool flowGlobal_=false;   // VEYRA_TEST_FLOW_GLOBAL=1: camera-motion candidate + foreground preference
     ComPtr<ID3D12Resource> fgFlowClaims_,fgFlowAgreement_;
     uint64_t motionPreviousSource_[2]={},previousSource_=0;
     ComPtr<ID3D12Resource> proxyTex_;
@@ -1058,6 +1059,9 @@ private:
     ComputePass flowRefinePass_,flowFillPass_,fgFlowAdaptPass_,flowClaimPass_;
     // VEYRA_TEST_FLOW_VIEW=1: tint the output with the FG motion (FlowView.hlsl).
     // FlowMedian.hlsl output (flow extent) when flowMedian_.
+    // GlobalMotion.hlsl median histogram (257x2 R32_UINT) when flowGlobal_.
+    ComputePass globalMotionPass_;
+    ComPtr<ID3D12Resource> fgGlobalMotion_;
     ComputePass flowMedianPass_;
     ComPtr<ID3D12Resource> fgFlowMedian_;
     ComputePass flowViewPass_;
