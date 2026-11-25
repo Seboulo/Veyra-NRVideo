@@ -898,6 +898,11 @@ bool EnhanceGraph::initialize(const EnhanceGraphDesc& desc)
     // VEYRA_TEST_FLOW_ZERO=0 turns it off for A/B comparisons.
     wchar_t zeroCandidate[4]{};
     flowZeroBias_=flowRefine_&&!(GetEnvironmentVariableW(L"VEYRA_TEST_FLOW_ZERO",zeroCandidate,4)&&zeroCandidate[0]==L'0')?.012f:0.f;
+    // Test switches: sub-pixel refinement of FidelityFX vectors (VEYRA_TEST_FLOW_SUBPIXEL=1) and
+    // the edge-aware weighted median after FlowFill (VEYRA_TEST_FLOW_MEDIAN=1).
+    auto testSwitch=[](const wchar_t* name){wchar_t v[4]{};return GetEnvironmentVariableW(name,v,4)&&v[0]==L'1';};
+    flowSubPixel_=flowRefine_&&fidelityFlow&&testSwitch(L"VEYRA_TEST_FLOW_SUBPIXEL");
+    flowMedian_=flowRefine_&&testSwitch(L"VEYRA_TEST_FLOW_MEDIAN");
     uint64_t budget=0,usage=0;
     // Every NR layer allocates its own full set of textures, and a stabilised
     // layer adds two history/guide pairs on top. The stack is bounded (16 nodes),
@@ -1200,6 +1205,7 @@ bool EnhanceGraph::createResources()
         fgFlowFilled_=makeTexture(context_.device(),nvofW_,nvofH_,DXGI_FORMAT_R16G16_FLOAT,true);
         fgBaseFlow_=makeTexture(context_.device(),workW_,workH_,DXGI_FORMAT_R16G16_FLOAT,true);
         if(!fgFlowRefined_||!fgFlowFilled_||!fgBaseFlow_)return false;
+        if(flowMedian_){fgFlowMedian_=makeTexture(context_.device(),nvofW_,nvofH_,DXGI_FORMAT_R16G16_FLOAT,true);if(!fgFlowMedian_)return false;}
         if(flowClaims_){
             fgFlowClaims_=makeTexture(context_.device(),nvofW_,nvofH_,DXGI_FORMAT_R32_UINT,true);
             fgFlowAgreement_=makeTexture(context_.device(),nvofW_,nvofH_,DXGI_FORMAT_R16_FLOAT,true);
@@ -1211,6 +1217,7 @@ bool EnhanceGraph::createResources()
         flowClaims_?"refined FidelityFX (FlowRefine+FlowClaim+FlowFill)":!flowRefine_?"validated flow":
         desc_.opticalFlowBackend==engine::OpticalFlowBackend::AmdFidelityFx?"refined FidelityFX (FlowRefine+FlowFill)":"refined NVOF (FlowRefine+FlowFill)"));
     if(flowRefine_)veyra::log::info("graph",std::format("FG motion zero-vector candidate={} bias={}",flowZeroBias_>0?"on":"off",flowZeroBias_));
+    if(flowRefine_&&(flowSubPixel_||flowMedian_))veyra::log::info("graph",std::format("FG motion sub-pixel={} weighted-median={} (test switches)",flowSubPixel_?"on":"off",flowMedian_?"on":"off"));
     // Colour grade tables (v4): only allocated when the stage is enabled.
     colorActive_=desc_.color.enabled&&!desc_.nodeColor(0);
     if(colorActive_){
@@ -2525,6 +2532,7 @@ bool EnhanceGraph::createComputePasses()
         if(!flowRefinePass_.loadShader("FlowRefine.dxil",cs)||!flowRefinePass_.create(context_.device(),cs,6,5,1))return false;
         if(!flowFillPass_.loadShader("FlowFill.dxil",cs)||!flowFillPass_.create(context_.device(),cs,4,3,1))return false;
         if(flowClaims_&&(!flowClaimPass_.loadShader("FlowClaim.dxil",cs)||!flowClaimPass_.create(context_.device(),cs,3,1,2)))return false;
+        if(flowMedian_&&(!flowMedianPass_.loadShader("FlowMedian.dxil",cs)||!flowMedianPass_.create(context_.device(),cs,3,2,1)))return false;
     }
     {
         wchar_t view[4]{};
@@ -2758,7 +2766,12 @@ bool EnhanceGraph::createViews()
         stagedSrv(fgFlowRefined_.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT,flowFillPass_,0);stagedSrv(nvofInB_.Get(),DXGI_FORMAT_B8G8R8A8_UNORM,flowFillPass_,1);
         single.Format=DXGI_FORMAT_R16_FLOAT;stager_.stageSrv(fgFlowAgreement_.Get(),&single,flowFillPass_.heap.Get(),2);
         makeUav(context_.device(),fgFlowFilled_.Get(),DXGI_FORMAT_R16G16_FLOAT,cpu(flowFillPass_,3));
-        stagedSrv(fgFlowFilled_.Get(),DXGI_FORMAT_R16G16_FLOAT,fgFlowAdaptPass_,0);
+        // FlowMedian: 0 filled, 1 current; 2 median. Adapt then reads the median.
+        if(flowMedian_){
+            stagedSrv(fgFlowFilled_.Get(),DXGI_FORMAT_R16G16_FLOAT,flowMedianPass_,0);stagedSrv(nvofInB_.Get(),DXGI_FORMAT_B8G8R8A8_UNORM,flowMedianPass_,1);
+            makeUav(context_.device(),fgFlowMedian_.Get(),DXGI_FORMAT_R16G16_FLOAT,cpu(flowMedianPass_,2));
+        }
+        stagedSrv(flowMedian_?fgFlowMedian_.Get():fgFlowFilled_.Get(),DXGI_FORMAT_R16G16_FLOAT,fgFlowAdaptPass_,0);
         makeUav(context_.device(),fgBaseFlow_.Get(),DXGI_FORMAT_R16G16_FLOAT,cpu(fgFlowAdaptPass_,1));
     }
     if(desc_.hdrWorking()&&videoSrInput_){
@@ -3930,7 +3943,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                     tracker_.transition(list,fgFlowRefined_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                     if(flowConsistency_)tracker_.transition(list,nvofReverseTex_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                     // Flags: 1 NVOF backward output, 2 FidelityFX vectors, 4 FidelityFX warming up.
-                    const uint32_t refineFlags=(flowConsistency_?1u:0u)|(amdOf_?2u:0u)|(amdOf_&&!amdOf_->warmedUp()?4u:0u);
+                    const uint32_t refineFlags=(flowConsistency_?1u:0u)|(amdOf_?2u:0u)|(amdOf_&&!amdOf_->warmedUp()?4u:0u)|(amdOf_&&flowSubPixel_?8u:0u);
                     const float rc[8]={uintBits(rawW_),uintBits(rawH_),uintBits(nvofW_),uintBits(nvofH_),uintBits(selectedGrid_),.004f,uintBits(refineFlags),flowZeroBias_};
                     flowRefinePass_.bind(list,rc,gpuHandleOf(flowRefinePass_,0).ptr,gpuHandleOf(flowRefinePass_,5).ptr);
                     list->Dispatch((nvofW_+15)/16,(nvofH_+15)/16,1);
@@ -3960,6 +3973,15 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                     list->Dispatch((nvofW_+15)/16,(nvofH_+15)/16,1);
                     tracker_.uavBarrier(list,fgFlowFilled_.Get());
                     tracker_.transition(list,fgFlowFilled_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    if(flowMedian_){
+                        tracker_.transition(list,fgFlowMedian_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                        // Colour sigma 0.1 per RGB distance, spatial sigma 4 flow pixels.
+                        const float mc[8]={uintBits(nvofW_),uintBits(nvofH_),.1f,4.f,0,0,0,0};
+                        flowMedianPass_.bind(list,mc,gpuHandleOf(flowMedianPass_,0).ptr,gpuHandleOf(flowMedianPass_,2).ptr);
+                        list->Dispatch((nvofW_+15)/16,(nvofH_+15)/16,1);
+                        tracker_.uavBarrier(list,fgFlowMedian_.Get());
+                        tracker_.transition(list,fgFlowMedian_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    }
                     if(flowConsistency_)tracker_.transition(list,nvofReverseTex_.Get(),D3D12_RESOURCE_STATE_COMMON);
                 }
                 tracker_.transition(list,nvofInA_.Get(),D3D12_RESOURCE_STATE_COMMON);
@@ -5384,7 +5406,7 @@ void EnhanceGraph::shutdown()
     for(auto& layer:nrAutoPool_)layer.reset();nrAutoLevel_=0;nrAutoPoolReady_=nrAutoResetPending_=false;
     residualRgba_.Reset();preSrProtectionRgba_.Reset();interNrProtectionRgba_.Reset();nrFlow_.Reset();baseFlow_.Reset();
     fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=false;rcasPass_={};rcasScratch_.Reset();rcasSharpness_=0.f;flowRefine_=flowConsistency_=false;
-    fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;
+    fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;fgFlowMedian_.Reset();flowMedianPass_={};flowMedian_=flowSubPixel_=false;
     for(unsigned i=0;i<kGeneratedPoolSlots;++i){if(fgDisableMapped_[i]&&fgDisableReadback_[i]){D3D12_RANGE written{0,0};fgDisableReadback_[i]->Unmap(0,&written);}fgDisableMapped_[i]=nullptr;fgDisable_[i].Reset();fgDisableReadback_[i].Reset();generatedLeases_[i].reset();genFrame_[i].Reset();}for(auto& lease:realLeases_)lease.reset();fgDisableInit_.Reset();
     encPass_ = ComputePass{};
     blitPass_ = ComputePass{};hdrVideoSrPass_={};srPrescalePass_={};srResolvePass_={};firstSrRestorePass_={};

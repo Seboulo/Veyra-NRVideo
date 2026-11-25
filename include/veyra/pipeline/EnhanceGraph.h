@@ -1020,6 +1020,8 @@ private:
     // for the forward-backward check (same VEYRA_TEST_FLOW_CONSISTENCY switch).
     bool flowClaims_=false;
     float flowZeroBias_=0.f; // FlowRefine zero-vector candidate cost bias; 0 = off
+    bool flowSubPixel_=false; // VEYRA_TEST_FLOW_SUBPIXEL=1: FlowRefine sub-pixel fit (FidelityFX)
+    bool flowMedian_=false;   // VEYRA_TEST_FLOW_MEDIAN=1: FlowMedian after FlowFill
     ComPtr<ID3D12Resource> fgFlowClaims_,fgFlowAgreement_;
     uint64_t motionPreviousSource_[2]={},previousSource_=0;
     ComPtr<ID3D12Resource> proxyTex_;
@@ -1054,6 +1056,9 @@ private:
     ComputePass downsamplePass_,residualPass_,stackProtectionPass_,flowAdaptPass_;
     ComputePass flowRefinePass_,flowFillPass_,fgFlowAdaptPass_,flowClaimPass_;
     // VEYRA_TEST_FLOW_VIEW=1: tint the output with the FG motion (FlowView.hlsl).
+    // FlowMedian.hlsl output (flow extent) when flowMedian_.
+    ComputePass flowMedianPass_;
+    ComPtr<ID3D12Resource> fgFlowMedian_;
     ComputePass flowViewPass_;
     bool flowView_=false;
     // VEYRA_TEST_FG_DEPTH=1: pseudo-depth for XeSS from the FG motion (FgPseudoDepth.hlsl).

@@ -34,11 +34,22 @@ cbuffer FlowRefineConstants : register(b0)
     uint gridSize;
     float tieBias;   // added to every neighbour cell's cost: the own cell wins ties
     uint flags;      // 1 reverseFlow holds NVOF's backward output (else w = 0); 2 FidelityFX
-                     // vectors; 4 FidelityFX still warming up
+                     // vectors; 4 FidelityFX still warming up; 8 sub-pixel refinement
     float zeroBias;  // > 0: also try the zero vector, at this extra cost; 0: off
 };
 
 float luma(float3 c) { return dot(c, float3(.2126, .7152, .0722)); }
+
+// Equiangular (V-shaped) fit of three matching costs at -1, 0, +1 pixel: the sub-pixel offset
+// of the minimum. For an absolute-difference cost this line fit is less biased toward whole
+// pixels than a parabola (Shimizu and Okutomi, "Sub-pixel estimation error cancellation on
+// area-based matching", IJCV 2005). Returns 0 when the centre is not a clear minimum.
+float subPixel(float minus, float centre, float plus)
+{
+    const float rise = max(minus, plus) - centre;
+    if (rise <= 1e-4 || centre > min(minus, plus)) return 0;
+    return clamp(.5 * (minus - plus) / rise, -.5, .5);
+}
 
 [numthreads(16, 16, 1)]
 void main(uint3 id : SV_DispatchThreadID)
@@ -76,6 +87,28 @@ void main(uint3 id : SV_DispatchThreadID)
         cost /= 9;
         // Biased to choose; the unbiased cost goes on to FlowFill's no-correspondence test.
         if (cost + zeroBias < bestCost) { bestCost = cost; best = 0; }
+    }
+    // FidelityFX vectors are whole pixels. Interpolating halfway, a whole-pixel error
+    // becomes a half-pixel misalignment of the two frames frame generation blends, which
+    // softens every moving texture in the generated frames. Refine the chosen vector to a
+    // fraction of a pixel from the costs one pixel either side. The zero vector stays exact:
+    // still HUD and characters must not shimmer.
+    if ((flags & 8u) != 0 && any(best != 0)) {
+        const int2 q = p + int2(round(best));
+        float c[4];
+        [unroll] for (int s = 0; s < 4; ++s) {
+            const int2 dir = s == 0 ? int2(-1, 0) : s == 1 ? int2(1, 0) : s == 2 ? int2(0, -1) : int2(0, 1);
+            float cost = 0;
+            [unroll] for (int j = 0; j < 9; ++j)
+                cost += abs(current[j] - luma(previousColor[clamp(q + dir + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+            c[s] = cost / 9;
+        }
+        // bestCost of a neighbour cell carries tieBias; compare against the raw cost.
+        float centre = 0;
+        [unroll] for (int j = 0; j < 9; ++j)
+            centre += abs(current[j] - luma(previousColor[clamp(q + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+        centre /= 9;
+        best += float2(subPixel(c[0], centre, c[1]), subPixel(c[2], centre, c[3]));
     }
     float disagreement = 0;
     if ((flags & 1u) != 0) {
