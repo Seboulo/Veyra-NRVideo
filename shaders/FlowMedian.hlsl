@@ -26,10 +26,19 @@
 // the camera's vector lands on is unsupported: it takes the other layer's vector when its own
 // colour matches the previous frame there (a face pixel that belongs to the character),
 // otherwise the camera's (uncovered background, or content entering at a picture edge).
+//
+// Layer memory (with VEYRA_TEST_FLOW_TEMPORAL=1). When the camera orbits fast around a
+// third-person character, the character turns in place: its pixels match the previous frame
+// at no vector, so the colour test above fails on the head too and handed it the camera's
+// vector - the head was carried away with the background. Last frame's final motion at the
+// same place tells the two apart: uncovered background was background there, the head was
+// foreground. A pixel that was foreground keeps the foreground layer unless the camera's
+// vector now matches it in colour (background the character has moved off).
 Texture2D<float2> flow : register(t0);           // flow extent, current->previous (FlowFill)
 Texture2D<float4> currentColor : register(t1);   // flow extent
 Texture2D<float4> previousColor : register(t2);  // flow extent
 Texture2D<uint> globalMotion : register(t3);     // GlobalMotion.hlsl (x = 256: median + 128), or null
+Texture2D<float2> history : register(t4);        // last frame's final motion (temporal switch), or null
 RWTexture2D<float2> output : register(u0);       // flow extent
 
 cbuffer FlowMedianConstants : register(b0)
@@ -40,23 +49,33 @@ cbuffer FlowMedianConstants : register(b0)
     float spatialSigma;  // pixels
     uint layers;         // 1: two-layer occlusion rule with the camera-motion estimate
     float matchLimit;    // mean RGB difference up to which a pixel matches the other layer
-    uint unused2;
+    uint historyValid;   // 1: history holds last frame's final motion
     uint unused3;
 };
 
 #define TAPS 25
 
+float colourError(int2 q, float2 v, int2 limit)
+{
+    const int2 s = clamp(q + int2(round(v)), int2(0, 0), limit);
+    const float3 d = abs(currentColor[q].rgb - previousColor[s].rgb);
+    return (d.r + d.g + d.b) * (1.0 / 3.0);
+}
+
 float2 supported(int2 q, float2 v, float2 g, int2 limit)
 {
     const float tolerance = 2 + .1 * length(g);
-    if (length(v - g) <= tolerance) return v;              // moves with the camera
+    const float2 h = historyValid != 0 ? history[q] : g;
+    const bool wasForeground = historyValid != 0 && length(h - g) > tolerance;
+    if (length(v - g) <= tolerance) {                      // moves with the camera
+        if (!wasForeground || colourError(q, g, limit) <= matchLimit) return v;
+        return h;                                          // turning foreground keeps its layer
+    }
     const int2 t = q + int2(round(g));
-    if (any(t < 0) || any(t > limit)) return g;            // entering at a picture edge
+    if (any(t < 0) || any(t > limit)) return wasForeground ? v : g; // entering at a picture edge
     const float2 w = flow[t];
     if (length(w - g) <= tolerance || length(v - w) <= tolerance) return v; // a layer of its own
-    const int2 s = clamp(q + int2(round(w)), int2(0, 0), limit);
-    const float3 d = abs(currentColor[q].rgb - previousColor[s].rgb);
-    return (d.r + d.g + d.b) * (1.0 / 3.0) <= matchLimit ? w : g;
+    return wasForeground || colourError(q, w, limit) <= matchLimit ? w : g;
 }
 
 [numthreads(16, 16, 1)]

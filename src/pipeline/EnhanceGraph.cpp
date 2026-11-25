@@ -2555,7 +2555,7 @@ bool EnhanceGraph::createComputePasses()
         if(flowGlobal_&&(!globalMotionPass_.loadShader("GlobalMotion.dxil",cs)||!globalMotionPass_.create(context_.device(),cs,2,1,1)))return false;
         if(!flowFillPass_.loadShader("FlowFill.dxil",cs)||!flowFillPass_.create(context_.device(),cs,4,3,1))return false;
         if(flowClaims_&&(!flowClaimPass_.loadShader("FlowClaim.dxil",cs)||!flowClaimPass_.create(context_.device(),cs,3,1,2)))return false;
-        if(flowMedian_&&(!flowMedianPass_.loadShader("FlowMedian.dxil",cs)||!flowMedianPass_.create(context_.device(),cs,5,4,1)))return false;
+        if(flowMedian_&&(!flowMedianPass_.loadShader("FlowMedian.dxil",cs)||!flowMedianPass_.create(context_.device(),cs,6,5,1)))return false;
     }
     {
         wchar_t view[4]{};
@@ -2802,13 +2802,16 @@ bool EnhanceGraph::createViews()
         single.Format=DXGI_FORMAT_R16_FLOAT;stager_.stageSrv(fgFlowAgreement_.Get(),&single,flowFillPass_.heap.Get(),2);
         makeUav(context_.device(),fgFlowFilled_.Get(),DXGI_FORMAT_R16G16_FLOAT,cpu(flowFillPass_,3));
         // FlowMedian: 0 filled, 1 current, 2 previous, 3 camera-motion histogram (null without
-        // VEYRA_TEST_FLOW_GLOBAL); 4 median. Adapt then reads the median.
+        // VEYRA_TEST_FLOW_GLOBAL), 4 last frame's final motion (null without
+        // VEYRA_TEST_FLOW_TEMPORAL); 5 median. Adapt then reads the median.
         if(flowMedian_){
             stagedSrv(fgFlowFilled_.Get(),DXGI_FORMAT_R16G16_FLOAT,flowMedianPass_,0);stagedSrv(nvofInB_.Get(),DXGI_FORMAT_B8G8R8A8_UNORM,flowMedianPass_,1);
             stagedSrv(nvofInA_.Get(),DXGI_FORMAT_B8G8R8A8_UNORM,flowMedianPass_,2);
             D3D12_SHADER_RESOURCE_VIEW_DESC histogram=raw;histogram.Format=DXGI_FORMAT_R32_UINT;
             stager_.stageSrv(fgGlobalMotion_.Get(),&histogram,flowMedianPass_.heap.Get(),3);
-            makeUav(context_.device(),fgFlowMedian_.Get(),DXGI_FORMAT_R16G16_FLOAT,cpu(flowMedianPass_,4));
+            D3D12_SHADER_RESOURCE_VIEW_DESC history=raw;history.Format=DXGI_FORMAT_R16G16_FLOAT;
+            stager_.stageSrv(fgFlowHistory_.Get(),&history,flowMedianPass_.heap.Get(),4);
+            makeUav(context_.device(),fgFlowMedian_.Get(),DXGI_FORMAT_R16G16_FLOAT,cpu(flowMedianPass_,5));
         }
         stagedSrv(flowMedian_?fgFlowMedian_.Get():fgFlowFilled_.Get(),DXGI_FORMAT_R16G16_FLOAT,fgFlowAdaptPass_,0);
         makeUav(context_.device(),fgBaseFlow_.Get(),DXGI_FORMAT_R16G16_FLOAT,cpu(fgFlowAdaptPass_,1));
@@ -4033,8 +4036,10 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                         // Colour sigma 0.1 per RGB distance, spatial sigma 4 flow pixels; with the
                         // layer rule a pixel matching the previous frame within 0.04 mean RGB
                         // (capture noise and compression) belongs to the neighbouring layer.
-                        const float mc[8]={uintBits(nvofW_),uintBits(nvofH_),.1f,4.f,uintBits(flowLayers_?1u:0u),.04f,0,0};
-                        flowMedianPass_.bind(list,mc,gpuHandleOf(flowMedianPass_,0).ptr,gpuHandleOf(flowMedianPass_,4).ptr);
+                        // The layer memory reads last frame's final motion (temporal switch).
+                        const bool layerMemory=flowLayers_&&flowTemporal_&&fgFlowHistoryValid_;
+                        const float mc[8]={uintBits(nvofW_),uintBits(nvofH_),.1f,4.f,uintBits(flowLayers_?1u:0u),.04f,uintBits(layerMemory?1u:0u),0};
+                        flowMedianPass_.bind(list,mc,gpuHandleOf(flowMedianPass_,0).ptr,gpuHandleOf(flowMedianPass_,5).ptr);
                         list->Dispatch((nvofW_+15)/16,(nvofH_+15)/16,1);
                         tracker_.uavBarrier(list,fgFlowMedian_.Get());
                         tracker_.transition(list,fgFlowMedian_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);

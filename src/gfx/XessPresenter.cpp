@@ -213,7 +213,7 @@ bool XessPresenter::bindSwapChain(ID3D12CommandQueue* queue,IDXGIFactory2* facto
         if(!p.check(p.xefgSwapChainD3D12InitFromSwapChainFn(p.fg,queue,&init),"Init(wrap)",true))return false;
     }else{
     if(!p.check(p.xefgSwapChainD3D12GetPropertiesFn(p.fg,&init,desc.Width,desc.Height,desc.Format,&properties),"Properties",true)||properties.maxSupportedInterpolations<1)return false;
-    log::info("xess-fg",std::format("swapchain={}x{} maxInterpolations={} bufferHeap={} textureHeap={} estimated-motion constant-depth experimental",desc.Width,desc.Height,properties.maxSupportedInterpolations,properties.tempBufferHeapSize,properties.tempTextureHeapSize));
+    log::info("xess-fg",std::format("swapchain={}x{} maxInterpolations={} bufferHeap={} textureHeap={} estimated-motion experimental (depth: see [graph] XeSS pseudo-depth)",desc.Width,desc.Height,properties.maxSupportedInterpolations,properties.tempBufferHeapSize,properties.tempTextureHeapSize));
     if(!p.check(p.xefgSwapChainD3D12InitFromSwapChainDescFn(p.fg,window,&desc,nullptr,queue,factory,&init),"Init",true))return false;
     }
     if(p.requestedGenerated>0&&!p.check(p.xefgSwapChainSetNumInterpolatedFramesFn(p.fg,p.requestedGenerated),"SetNumInterpolatedFrames",true))return false;
