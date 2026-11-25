@@ -825,6 +825,8 @@ public:
     uint32_t fgMultiplier() const { return desc_.fgMultiplier; }
     ID3D12Resource* presentMotion(uint32_t slot) const { return presentMotion_[slot%2].Get(); }
     ID3D12Resource* presentDepth() const { return depthTex_.Get(); }
+    // XeSS depth for one parity: the pseudo-depth (VEYRA_TEST_FG_DEPTH=1) or the constant plane.
+    ID3D12Resource* presentDepth(uint32_t slot) const { return fgPseudoDepth_?presentDepth_[slot%2].Get():depthTex_.Get(); }
     bool presentMotionValid(uint32_t slot) const { return presentMotionValid_[slot%2]; }
     uint64_t motionPreviousSource(uint32_t slot) const { return motionPreviousSource_[slot%2]; }
     uint64_t lastNvofSignal() const;
@@ -1054,6 +1056,10 @@ private:
     // VEYRA_TEST_FLOW_VIEW=1: tint the output with the FG motion (FlowView.hlsl).
     ComputePass flowViewPass_;
     bool flowView_=false;
+    // VEYRA_TEST_FG_DEPTH=1: pseudo-depth for XeSS from the FG motion (FgPseudoDepth.hlsl).
+    ComputePass fgPseudoDepthPass_;
+    ComPtr<ID3D12Resource> presentDepth_[2];
+    bool fgPseudoDepth_=false;
     // Stage-5 output stabiliser (anti-flicker). Constructed only when the
     // setting is non-zero; a default (0) session never allocates it and the
     // dispatch is skipped, so the disabled path is unchanged.

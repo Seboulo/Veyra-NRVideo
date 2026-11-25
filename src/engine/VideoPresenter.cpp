@@ -565,7 +565,7 @@ bool VideoPresenter::present(gfx::D3D12DeviceContext& ctx,gfx::CommandSlotRing& 
         // A history break is not a user disable: the graph supplies initialized
         // zero motion in this case. Keep the current color in XeSS history so
         // the next continuous frame can interpolate without another warmup.
-        const bool enabled=regionVisible&&!generated&&!comparison&&graph.presentMotion(slot)&&graph.presentDepth()&&identity.sourceFrameId!=lastXessIdentity_.sourceFrameId&&!xessGenerationSuppressed_;
+        const bool enabled=regionVisible&&!generated&&!comparison&&graph.presentMotion(slot)&&graph.presentDepth(slot)&&identity.sourceFrameId!=lastXessIdentity_.sourceFrameId&&!xessGenerationSuppressed_;
         const bool reset=!graph.presentMotionValid(slot)||!xessWasEnabled_||identity.epoch!=lastXessIdentity_.epoch||identity.settingsRevision!=lastXessIdentity_.settingsRevision||graph.motionPreviousSource(slot)!=lastXessIdentity_.sourceFrameId||view.quarterTurns()!=previousXessView_.quarterTurns();
         // frameRenderTime is the provider's only independent period estimate on
         // non-Intel GPUs. Feeding present-to-present time back would include the
@@ -588,7 +588,7 @@ bool VideoPresenter::present(gfx::D3D12DeviceContext& ctx,gfx::CommandSlotRing& 
             if(delta>=0.125&&delta<500)elapsed=float(delta);
         }
         auto* motion=graph.presentMotion(slot);
-        auto* depth=graph.presentDepth();
+        auto* depth=graph.presentDepth(slot);
         if(enabled){
             // Stable full-buffer interpolation avoids provider letterbox
             // reallocations. Guidance must follow the same displayed domain.
