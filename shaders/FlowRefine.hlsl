@@ -24,6 +24,7 @@ Texture2D<float4> currentColor : register(t2);   // flow extent
 Texture2D<int2> reverseFlow : register(t3);      // grid extent, S10.5, previous->current (NVOF)
 Texture2D<uint> sceneChanges : register(t4);     // FidelityFX scene-change history at (1,0)
 Texture2D<uint> globalMotion : register(t5);     // GlobalMotion.hlsl: x = 256 holds median + 128
+Texture2D<float2> previousMotion : register(t6); // flow extent: last frame's final FG motion
 RWTexture2D<float4> refined : register(u0);      // xy vector, z best cost, w forward-backward disagreement
 
 cbuffer FlowRefineConstants : register(b0)
@@ -37,7 +38,8 @@ cbuffer FlowRefineConstants : register(b0)
     uint flags;      // 1 reverseFlow holds NVOF's backward output (else w = 0); 2 FidelityFX
                      // vectors; 4 FidelityFX still warming up; 8 sub-pixel refinement;
                      // 16 small vectors around zero as well (needs zeroBias > 0);
-                     // 32 camera (global) motion candidate and foreground preference
+                     // 32 camera (global) motion candidate and foreground preference;
+                     // 64 previousMotion holds last frame's motion (temporal candidate)
     float zeroBias;  // > 0: also try the zero vector, at this extra cost; 0: off
 };
 
@@ -98,6 +100,20 @@ void main(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint index :
         cost /= 9;
         if (k != 4) cost += tieBias;
         if (cost < bestCost) { bestCost = cost; best = v; }
+    }
+    // Temporal candidate of 3-D recursive search (de Haan et al. 1993): the vector this pixel
+    // had in the last frame. Motion is mostly continuous, so a correct vector, once found,
+    // keeps being offered on the next frames even where the grid cells around are all wrong
+    // (a character in front of the turning background).
+    if ((flags & 64u) != 0) {
+        const float2 v = previousMotion[p];
+        const int2 q = p + int2(round(v));
+        float cost = 0;
+        [unroll] for (int j = 0; j < 9; ++j)
+            cost += abs(current[j] - luma(previousColor[clamp(q + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+        cost = cost / 9 + tieBias;
+        // Whole pixels like the other candidates; sub-pixel refinement follows.
+        if (cost < bestCost) { bestCost = cost; best = float2(int2(round(v))); }
     }
     // Camera motion: one more candidate where the grid cells around are all wrong.
     const bool useGlobal = (flags & 32u) != 0;

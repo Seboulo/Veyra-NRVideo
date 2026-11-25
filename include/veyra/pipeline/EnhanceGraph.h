@@ -1024,6 +1024,9 @@ private:
     bool flowMedian_=false;   // VEYRA_TEST_FLOW_MEDIAN=1: FlowMedian after FlowFill
     bool flowNearZero_=false; // VEYRA_TEST_FLOW_NEAR=1: FlowRefine tries the 12 vectors nearest zero
     bool flowGlobal_=false;   // VEYRA_TEST_FLOW_GLOBAL=1: camera-motion candidate + foreground preference
+    bool flowTemporal_=false; // VEYRA_TEST_FLOW_TEMPORAL=1: last frame's FG motion as a candidate
+    bool fgFlowHistoryValid_=false;
+    ComPtr<ID3D12Resource> fgFlowHistory_; // flow extent R16G16_FLOAT, last frame's final FG motion
     ComPtr<ID3D12Resource> fgFlowClaims_,fgFlowAgreement_;
     uint64_t motionPreviousSource_[2]={},previousSource_=0;
     ComPtr<ID3D12Resource> proxyTex_;
