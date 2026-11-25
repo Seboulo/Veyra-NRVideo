@@ -69,18 +69,18 @@ void main(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint index :
 {
     const bool fidelity = (flags & 2u) != 0;
     // The frames NvofDensify zeroes for FidelityFX (warm-up and its four-frame cut history)
-    // carry no motion here either. Uniform over the dispatch, so it may precede the barrier.
-    if ((flags & 4u) != 0 || (fidelity && (sceneChanges[uint2(1, 0)] & 15u) != 0)) {
-        if (id.x < flowW && id.y < flowH) refined[id.xy] = 0;
-        return;
-    }
+    // carry no motion here either.
+    const bool idle = (flags & 4u) != 0 || (fidelity && (sceneChanges[uint2(1, 0)] & 15u) != 0);
     const int2 limit = int2(flowW - 1, flowH - 1);
     // Same clamping as a direct read: tile entry t holds previousColor[clamp(origin + t)].
     const int2 tileOrigin = int2(group.xy) * 16 - TILE_RADIUS;
-    for (uint t = index; t < TILE_SIDE * TILE_SIDE; t += 256)
-        previousTile[t] = luma(previousColor[clamp(tileOrigin + int2(t % TILE_SIDE, t / TILE_SIDE), int2(0, 0), limit)].rgb);
+    if (!idle && zeroBias > 0)
+        for (uint t = index; t < TILE_SIDE * TILE_SIDE; t += 256)
+            previousTile[t] = luma(previousColor[clamp(tileOrigin + int2(t % TILE_SIDE, t / TILE_SIDE), int2(0, 0), limit)].rgb);
+    // Every thread reaches the barrier: the returns come after it.
     GroupMemoryBarrierWithGroupSync();
     if (id.x >= flowW || id.y >= flowH) return;
+    if (idle) { refined[id.xy] = 0; return; }
     const int2 p = int2(id.xy);
     const float scale = fidelity ? 1.0 : 1.0 / 32.0;
     float current[9];
