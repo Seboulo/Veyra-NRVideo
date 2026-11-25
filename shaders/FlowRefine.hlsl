@@ -54,17 +54,33 @@ float subPixel(float minus, float centre, float plus)
     return clamp(.5 * (minus - plus) / rise, -.5, .5);
 }
 
+// Previous-frame luma around the group, for the candidates within a few pixels of zero (zero,
+// the near ones): 16 + 2 * 3 pixels a side covers offsets up to 2 plus the 3x3 patch. With
+// the near candidates that is 117 reads per pixel served from groupshared memory instead of
+// the texture.
+#define TILE_RADIUS 3
+#define TILE_SIDE (16 + 2 * TILE_RADIUS)
+groupshared float previousTile[TILE_SIDE * TILE_SIDE];
+
 [numthreads(16, 16, 1)]
-void main(uint3 id : SV_DispatchThreadID)
+void main(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint index : SV_GroupIndex)
 {
-    if (id.x >= flowW || id.y >= flowH) return;
-    const int2 p = int2(id.xy);
     const bool fidelity = (flags & 2u) != 0;
     // The frames NvofDensify zeroes for FidelityFX (warm-up and its four-frame cut history)
-    // carry no motion here either.
-    if ((flags & 4u) != 0 || (fidelity && (sceneChanges[uint2(1, 0)] & 15u) != 0)) { refined[p] = 0; return; }
-    const float scale = fidelity ? 1.0 : 1.0 / 32.0;
+    // carry no motion here either. Uniform over the dispatch, so it may precede the barrier.
+    if ((flags & 4u) != 0 || (fidelity && (sceneChanges[uint2(1, 0)] & 15u) != 0)) {
+        if (id.x < flowW && id.y < flowH) refined[id.xy] = 0;
+        return;
+    }
     const int2 limit = int2(flowW - 1, flowH - 1);
+    // Same clamping as a direct read: tile entry t holds previousColor[clamp(origin + t)].
+    const int2 tileOrigin = int2(group.xy) * 16 - TILE_RADIUS;
+    for (uint t = index; t < TILE_SIDE * TILE_SIDE; t += 256)
+        previousTile[t] = luma(previousColor[clamp(tileOrigin + int2(t % TILE_SIDE, t / TILE_SIDE), int2(0, 0), limit)].rgb);
+    GroupMemoryBarrierWithGroupSync();
+    if (id.x >= flowW || id.y >= flowH) return;
+    const int2 p = int2(id.xy);
+    const float scale = fidelity ? 1.0 : 1.0 / 32.0;
     float current[9];
     [unroll] for (int j = 0; j < 9; ++j)
         current[j] = luma(currentColor[clamp(p + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb);
@@ -104,9 +120,10 @@ void main(uint3 id : SV_DispatchThreadID)
     if (zeroBias > 0) {
         // The best still candidate (zero, then the near ones) is compared once with the
         // winner so far, so the bias applies once whatever its sign.
+        const int2 local = p - tileOrigin;
         float stillCost = 0;
         [unroll] for (int j = 0; j < 9; ++j)
-            stillCost += abs(current[j] - luma(previousColor[clamp(p + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+            stillCost += abs(current[j] - previousTile[(local.y + j / 3 - 1) * TILE_SIDE + local.x + j % 3 - 1]);
         stillCost /= 9;
         float2 still = 0;
         // A character that stays near the screen centre while the camera turns still moves a
@@ -119,8 +136,9 @@ void main(uint3 id : SV_DispatchThreadID)
                 int2(2, 0), int2(-2, 0), int2(0, 2), int2(0, -2) };
             [unroll] for (int n = 0; n < 12; ++n) {
                 float nearCost = 0;
+                const int2 at = local + kNear[n];
                 [unroll] for (int j = 0; j < 9; ++j)
-                    nearCost += abs(current[j] - luma(previousColor[clamp(p + kNear[n] + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+                    nearCost += abs(current[j] - previousTile[(at.y + j / 3 - 1) * TILE_SIDE + at.x + j % 3 - 1]);
                 nearCost /= 9;
                 if (nearCost < stillCost) { stillCost = nearCost; still = float2(kNear[n]); }
             }

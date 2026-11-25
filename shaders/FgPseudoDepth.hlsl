@@ -12,7 +12,13 @@
 // rings are wide on purpose: at an edge a narrow ring sees both sides about equally from either
 // side and cannot tell which one is in front. A uniform pan agrees everywhere and keeps the
 // constant far plane. Smaller depth is nearer (XeSS default).
+// With the camera-motion estimate (VEYRA_TEST_FLOW_GLOBAL=1) a pixel that moves like the
+// camera while it turns is background outright, and one that does not is in front; the
+// rings then only grade how far in front. This is the foreground/background split of
+// television frame-rate converters (global-motion candidate, Biezen and de Haan, IEEE TCSVT
+// 1998), and it holds for a character larger than the rings, whose own pixels the rings see.
 Texture2D<float2> motion : register(t0);   // work extent, current->previous pixels (XeSS input)
+Texture2D<uint> globalMotion : register(t1); // GlobalMotion.hlsl (x = 256: median + 128), or null
 RWTexture2D<float> depth : register(u0);   // work extent
 
 cbuffer FgPseudoDepthConstants : register(b0)
@@ -22,7 +28,7 @@ cbuffer FgPseudoDepthConstants : register(b0)
     float innerRadius;  // pixels
     float outerRadius;  // pixels
     float tolerance;    // vectors closer than this (pixels) agree
-    uint unused0;
+    float globalScale;  // work pixels per flow pixel; 0 = no camera-motion estimate
     uint unused1;
     uint unused2;
 };
@@ -52,5 +58,14 @@ void main(uint3 id : SV_DispatchThreadID)
     }
     // A lone sample cannot tell front from back: such pixels stay at the far plane.
     const float share = total > 0 ? agree / total : 1;
-    depth[p] = lerp(.25, 1.0, share);
+    float z = lerp(.25, 1.0, share);
+    if (globalScale > 0) {
+        const float2 g = float2(int(globalMotion[uint2(256, 0)]) - 128, int(globalMotion[uint2(256, 1)]) - 128) * globalScale;
+        // Only while the camera turns: with a still camera everything still agrees anyway.
+        if (dot(g, g) > 4) {
+            const bool camera = length(v - g) <= tolerance + .1 * max(length(v), length(g));
+            z = camera ? 1.0 : lerp(.25, .75, share);
+        }
+    }
+    depth[p] = z;
 }

@@ -2563,7 +2563,7 @@ bool EnhanceGraph::createComputePasses()
         veyra::log::info("graph",std::format("RCAS sharpening on sharpness={:.3f} (test switch)",rcasSharpness_));
     }
     if(fgPseudoDepth_){
-        if(!fgPseudoDepthPass_.loadShader("FgPseudoDepth.dxil",cs)||!fgPseudoDepthPass_.create(context_.device(),cs,4,1,1))return false;
+        if(!fgPseudoDepthPass_.loadShader("FgPseudoDepth.dxil",cs)||!fgPseudoDepthPass_.create(context_.device(),cs,6,2,1))return false;
         veyra::log::info("graph","XeSS pseudo-depth on (foreground = motion unlike the surroundings)");
     }
     // Stage-5 output stabiliser. Only allocated when the setting is non-zero:
@@ -2949,10 +2949,13 @@ bool EnhanceGraph::createViews()
         makeUav(context_.device(),rcasScratch_.Get(),outputFormat(),cpu(rcasPass_,2));
     }
     if(fgPseudoDepth_){
-        // 0/1 parity motion, 2/3 parity depth.
+        // Per parity i: SRVs 2i (motion) and 2i+1 (camera-motion histogram or null); UAV 4+i depth.
+        D3D12_SHADER_RESOURCE_VIEW_DESC histogram{};histogram.Format=DXGI_FORMAT_R32_UINT;histogram.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
+        histogram.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;histogram.Texture2D.MipLevels=1;
         for(UINT i=0;i<2;++i){
-            stagedSrv(presentMotion_[i].Get(),DXGI_FORMAT_R16G16_FLOAT,fgPseudoDepthPass_,i);
-            makeUav(context_.device(),presentDepth_[i].Get(),DXGI_FORMAT_R32_FLOAT,cpu(fgPseudoDepthPass_,2+i));
+            stagedSrv(presentMotion_[i].Get(),DXGI_FORMAT_R16G16_FLOAT,fgPseudoDepthPass_,2*i);
+            stager_.stageSrv(fgGlobalMotion_.Get(),&histogram,fgPseudoDepthPass_.heap.Get(),2*i+1);
+            makeUav(context_.device(),presentDepth_[i].Get(),DXGI_FORMAT_R32_FLOAT,cpu(fgPseudoDepthPass_,4+i));
         }
     }
     if(flowView_){
@@ -4710,8 +4713,11 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         if(fgPseudoDepth_){
             tracker_.transition(list,presentMotion_[parity].Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             tracker_.transition(list,presentDepth_[parity].Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            const float c[8]={uintBits(workW_),uintBits(workH_),96.f,224.f,1.f,0,0,0};
-            fgPseudoDepthPass_.bind(list,c,gpuHandleOf(fgPseudoDepthPass_,parity).ptr,gpuHandleOf(fgPseudoDepthPass_,2+parity).ptr);
+            // Camera motion only when this frame's flow ran (the histogram is this frame's).
+            const float globalScale=flowGlobal_&&haveFlow&&desc_.fgUsesFlow()?float(workW_)/float(nvofW_):0.f;
+            const float c[8]={uintBits(workW_),uintBits(workH_),96.f,224.f,1.f,globalScale,0,0};
+            if(flowGlobal_)tracker_.transition(list,fgGlobalMotion_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            fgPseudoDepthPass_.bind(list,c,gpuHandleOf(fgPseudoDepthPass_,2*parity).ptr,gpuHandleOf(fgPseudoDepthPass_,4+parity).ptr);
             list->Dispatch((workW_+15)/16,(workH_+15)/16,1);
             tracker_.uavBarrier(list,presentDepth_[parity].Get());
             tracker_.transition(list,presentDepth_[parity].Get(),D3D12_RESOURCE_STATE_COMMON);
