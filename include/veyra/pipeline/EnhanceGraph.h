@@ -1060,6 +1060,10 @@ private:
     ComputePass fgPseudoDepthPass_;
     ComPtr<ID3D12Resource> presentDepth_[2];
     bool fgPseudoDepth_=false;
+    // VEYRA_TEST_RCAS=<stops>: FSR 1 RCAS sharpening of the SDR output before FG (Rcas.hlsl).
+    ComputePass rcasPass_;
+    ComPtr<ID3D12Resource> rcasScratch_;
+    float rcasSharpness_=0.f;
     // Stage-5 output stabiliser (anti-flicker). Constructed only when the
     // setting is non-zero; a default (0) session never allocates it and the
     // dispatch is skipped, so the disabled path is unchanged.

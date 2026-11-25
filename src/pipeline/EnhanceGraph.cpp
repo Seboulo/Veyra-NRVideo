@@ -1181,6 +1181,17 @@ bool EnhanceGraph::createResources()
         fgPseudoDepth_=presentSinkFg()&&desc_.fgUsesFlow()&&GetEnvironmentVariableW(L"VEYRA_TEST_FG_DEPTH",pseudoDepth,4)&&pseudoDepth[0]==L'1';
         if(fgPseudoDepth_)for(auto& depth:presentDepth_){depth=makeTexture(context_.device(),workW_,workH_,DXGI_FORMAT_R32_FLOAT,true);if(!depth)return false;}
     }
+    {
+        // Sharpening of SDR output only: RCAS works on display-encoded [0,1] values.
+        wchar_t stops[16]{};
+        rcasSharpness_=0.f;
+        if(outputFormat()==DXGI_FORMAT_R8G8B8A8_UNORM&&GetEnvironmentVariableW(L"VEYRA_TEST_RCAS",stops,16)){
+            wchar_t* end=nullptr;const float value=std::wcstof(stops,&end);
+            rcasSharpness_=std::exp2(-std::clamp(end!=stops?value:.5f,0.f,4.f));
+            rcasScratch_=makeTexture(context_.device(),workW_,workH_,outputFormat(),true);
+            if(!rcasScratch_)return false;
+        }
+    }
     if(!residualRgba_||!nrFlow_||!baseFlow_)return false;
     // FG with optical-flow motion (XeSS present sink, graph DLSS/FSR/ANR): refined NVOF or
     // FidelityFX vectors (FlowRefine/FlowFill) - the refinement reads their grid vectors.
@@ -2522,6 +2533,10 @@ bool EnhanceGraph::createComputePasses()
         if(flowView_)veyra::log::info("graph",std::format("FG motion test view on ({})",flowRefine_?"refined":"raw"));
     }
     if(guidedChroma())veyra::log::info("graph","chroma upsampling luma-guided (joint bilateral, test switch)");
+    if(rcasSharpness_>0){
+        if(!rcasPass_.loadShader("Rcas.dxil",cs)||!rcasPass_.create(context_.device(),cs,3,1,1))return false;
+        veyra::log::info("graph",std::format("RCAS sharpening on sharpness={:.3f} (test switch)",rcasSharpness_));
+    }
     if(fgPseudoDepth_){
         if(!fgPseudoDepthPass_.loadShader("FgPseudoDepth.dxil",cs)||!fgPseudoDepthPass_.create(context_.device(),cs,4,1,1))return false;
         veyra::log::info("graph","XeSS pseudo-depth on (foreground = motion unlike the surroundings)");
@@ -2891,6 +2906,11 @@ bool EnhanceGraph::createViews()
     if (viewsUav) makeUav(context_.device(), videoFrame_[1].Get(), outputFormat(), cpu(blitPass_, 4));
     if (viewsTex) stagedSrv(nvofInB_.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, blitPass_, 5);
     if (viewsUav) makeUav(context_.device(), nvofInA_.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, cpu(blitPass_, 6));
+    if(rcasSharpness_>0){
+        stagedSrv(videoFrame_[0].Get(),outputFormat(),rcasPass_,0);
+        stagedSrv(videoFrame_[1].Get(),outputFormat(),rcasPass_,1);
+        makeUav(context_.device(),rcasScratch_.Get(),outputFormat(),cpu(rcasPass_,2));
+    }
     if(fgPseudoDepth_){
         // 0/1 parity motion, 2/3 parity depth.
         for(UINT i=0;i<2;++i){
@@ -4589,6 +4609,20 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         tracker_.transition(list, videoFrame_[parity].Get(), D3D12_RESOURCE_STATE_COMMON);
 
     }
+    if(rcasSharpness_>0){
+        auto* frame=videoFrame_[parity].Get();
+        tracker_.transition(list,frame,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        tracker_.transition(list,rcasScratch_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        const float c[8]={uintBits(workW_),uintBits(workH_),rcasSharpness_,0,0,0,0,0};
+        rcasPass_.bind(list,c,gpuHandleOf(rcasPass_,parity).ptr,gpuHandleOf(rcasPass_,2).ptr);
+        list->Dispatch((workW_+15)/16,(workH_+15)/16,1);
+        tracker_.uavBarrier(list,rcasScratch_.Get());
+        tracker_.transition(list,rcasScratch_.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE);
+        tracker_.transition(list,frame,D3D12_RESOURCE_STATE_COPY_DEST);
+        list->CopyResource(frame,rcasScratch_.Get());
+        tracker_.transition(list,frame,D3D12_RESOURCE_STATE_COMMON);
+        tracker_.transition(list,rcasScratch_.Get(),D3D12_RESOURCE_STATE_COMMON);
+    }
     if(flowView_&&haveFlow){
         auto* viewMotion=flowRefine_?fgBaseFlow_.Get():baseFlow_.Get();
         tracker_.transition(list,viewMotion,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -5349,7 +5383,7 @@ void EnhanceGraph::shutdown()
     nrInstances_.clear();
     for(auto& layer:nrAutoPool_)layer.reset();nrAutoLevel_=0;nrAutoPoolReady_=nrAutoResetPending_=false;
     residualRgba_.Reset();preSrProtectionRgba_.Reset();interNrProtectionRgba_.Reset();nrFlow_.Reset();baseFlow_.Reset();
-    fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=false;flowRefine_=flowConsistency_=false;
+    fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=false;rcasPass_={};rcasScratch_.Reset();rcasSharpness_=0.f;flowRefine_=flowConsistency_=false;
     fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;
     for(unsigned i=0;i<kGeneratedPoolSlots;++i){if(fgDisableMapped_[i]&&fgDisableReadback_[i]){D3D12_RANGE written{0,0};fgDisableReadback_[i]->Unmap(0,&written);}fgDisableMapped_[i]=nullptr;fgDisable_[i].Reset();fgDisableReadback_[i].Reset();generatedLeases_[i].reset();genFrame_[i].Reset();}for(auto& lease:realLeases_)lease.reset();fgDisableInit_.Reset();
     encPass_ = ComputePass{};
