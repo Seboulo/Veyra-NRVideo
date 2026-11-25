@@ -144,9 +144,26 @@ float3 DoviP5ToPqBt2020(float luma,float2 chroma)
     return NitsToPq(mul(float3x3(dv3.xyz,dv4.xyz,dv5.xyz),PqToNits(pq)));
 }
 
+float sq(float x){return x*x;}
+
+// Luma averaged over the 2x2 block a chroma sample covers (box decimation): the
+// reference the luma-guided weights compare against.
+float BlockLuma(int2 chroma,int2 last)
+{
+    const int2 c=clamp(chroma,int2(0,0),last)*2;
+    const int2 lumaLast=int2(yuvDimensions.xy)-1;
+    return .25*(lumaPlane[min(c,lumaLast)]+lumaPlane[min(c+int2(1,0),lumaLast)]+
+                lumaPlane[min(c+int2(0,1),lumaLast)]+lumaPlane[min(c+int2(1,1),lumaLast)]);
+}
+
 float2 ReconstructChroma(uint2 pixel)
 {
-    uint location=yuvDimensions.w;
+    uint location=yuvDimensions.w&0xFFu;
+    // Bit 8: luma-guided (joint bilateral) upsampling, Kopf et al., SIGGRAPH 2007. Each of
+    // the four bilinear chroma samples is also weighted by how close its block's luma is to
+    // this pixel's luma, so colour stops at the luma edge instead of bleeding one chroma
+    // pixel across it (red HUD text, coloured outlines on 4:2:0 capture).
+    const bool guided=(yuvDimensions.w&0x100u)!=0;
     if(location==0)return chromaPlane[pixel/2];
     // Chroma sample origin in luma pixel-center coordinates. Respect MPEG
     // left, JPEG center and vertical top/bottom placement; no luma filtering.
@@ -164,6 +181,17 @@ float2 ReconstructChroma(uint2 pixel)
     float2 b=chromaPlane[clamp(base+int2(1,0),int2(0,0),last)];
     float2 c=chromaPlane[clamp(base+int2(0,1),int2(0,0),last)];
     float2 d=chromaPlane[clamp(base+int2(1,1),int2(0,0),last)];
+    if(guided){
+        const float y=lumaPlane[pixel];
+        // sigma 0.05 of the code range: flat areas keep the plain bilinear result.
+        const float k=1.0/(2.0*0.05*0.05);
+        const float4 w=float4((1-fraction.x)*(1-fraction.y),fraction.x*(1-fraction.y),(1-fraction.x)*fraction.y,fraction.x*fraction.y)*
+            exp(-k*float4(sq(y-BlockLuma(base,last)),sq(y-BlockLuma(base+int2(1,0),last)),
+                          sq(y-BlockLuma(base+int2(0,1),last)),sq(y-BlockLuma(base+int2(1,1),last))));
+        const float total=w.x+w.y+w.z+w.w;
+        // No sample resembles this pixel (a one-pixel feature): plain bilinear.
+        if(total>1e-4)return (a*w.x+b*w.y+c*w.z+d*w.w)/total;
+    }
     return lerp(lerp(a,b,fraction.x),lerp(c,d,fraction.x),fraction.y);
 }
 

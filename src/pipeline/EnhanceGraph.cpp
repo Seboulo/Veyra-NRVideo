@@ -74,6 +74,11 @@ namespace {
 
 constexpr int64_t usPerSecond = 1000000;
 float uintBits(uint32_t v) { return std::bit_cast<float>(v); }
+// VEYRA_TEST_CHROMA_GUIDED=1: luma-guided 4:2:0 chroma upsampling (YuvToLinearRgb.hlsl).
+bool guidedChroma(){
+    static const bool on=[]{wchar_t v[4]{};return GetEnvironmentVariableW(L"VEYRA_TEST_CHROMA_GUIDED",v,4)&&v[0]==L'1';}();
+    return on;
+}
 // RTX Video SR passes. The final pass (SR input -> SR output) takes the second
 // quality under double SR; the first pass (source -> first result) exists only
 // there. Each pass runs its own family's runtime: NGX for the standard family,
@@ -2516,6 +2521,7 @@ bool EnhanceGraph::createComputePasses()
         if(flowView_&&(!flowViewPass_.loadShader("FlowView.dxil",cs)||!flowViewPass_.create(context_.device(),cs,3,1,1)))return false;
         if(flowView_)veyra::log::info("graph",std::format("FG motion test view on ({})",flowRefine_?"refined":"raw"));
     }
+    if(guidedChroma())veyra::log::info("graph","chroma upsampling luma-guided (joint bilateral, test switch)");
     if(fgPseudoDepth_){
         if(!fgPseudoDepthPass_.loadShader("FgPseudoDepth.dxil",cs)||!fgPseudoDepthPass_.create(context_.device(),cs,4,1,1))return false;
         veyra::log::info("graph","XeSS pseudo-depth on (foreground = motion unlike the surroundings)");
@@ -3598,7 +3604,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
             resolved.matrix==YuvMatrix::BT2020NCL?2.0f:resolved.matrix==YuvMatrix::BT601?0.0f:1.0f,
             resolved.transfer==TransferFunction::HLG?5.0f:resolved.transfer==TransferFunction::PQ?4.0f:float(workingTransferCode(resolved)), (nv12Texture?(nv12Texture->GetDesc().Format==DXGI_FORMAT_P010?1.0f:0.0f):(desc_.captureBitDepth==16?2.0f:desc_.wideYuvInput()?1.0f:0.0f)),
             uintBits(srcW_), uintBits(srcH_), uintBits((desc_.hdrWorking()?1u:0u)|(resolved.primaries==ColorPrimaries::BT2020?2u:0u)),
-            uintBits(resolved.reconstructChroma?std::max(1u,unsigned(resolved.chromaLocation)):0u),toneMapPeakNits_,203.0f,0,0 };
+            uintBits(resolved.reconstructChroma?std::max(1u,unsigned(resolved.chromaLocation))|(guidedChroma()?0x100u:0u):0u),toneMapPeakNits_,203.0f,0,0 };
         if(grade)packColorGradeConstants(colorTables_,constants+12);
         // Dolby Vision profile 5: written on every frame because the enable flag
         // lives inside the block, so switching source content back to ordinary
