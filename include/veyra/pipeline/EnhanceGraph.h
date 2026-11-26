@@ -1074,6 +1074,8 @@ private:
     ComputePass fgPseudoDepthPass_;
     ComPtr<ID3D12Resource> presentDepth_[2];
     bool fgPseudoDepth_=false;
+    // VEYRA_TEST_FG_DEPTH_MATCH=1: pixels whose vector finds no matching colour are far (uncovered background).
+    bool fgDepthMatch_=false;
     // VEYRA_TEST_RCAS=<stops>: FSR 1 RCAS sharpening of the SDR output before FG (Rcas.hlsl).
     ComputePass rcasPass_;
     ComPtr<ID3D12Resource> rcasScratch_;

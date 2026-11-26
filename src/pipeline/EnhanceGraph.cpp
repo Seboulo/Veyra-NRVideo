@@ -1204,6 +1204,8 @@ bool EnhanceGraph::createResources()
     {
         wchar_t pseudoDepth[4]{};
         fgPseudoDepth_=presentSinkFg()&&desc_.fgUsesFlow()&&GetEnvironmentVariableW(L"VEYRA_TEST_FG_DEPTH",pseudoDepth,4)&&pseudoDepth[0]==L'1';
+        wchar_t depthMatch[4]{};
+        fgDepthMatch_=fgPseudoDepth_&&GetEnvironmentVariableW(L"VEYRA_TEST_FG_DEPTH_MATCH",depthMatch,4)&&depthMatch[0]==L'1';
         if(fgPseudoDepth_)for(auto& depth:presentDepth_){depth=makeTexture(context_.device(),workW_,workH_,DXGI_FORMAT_R32_FLOAT,true);if(!depth)return false;}
     }
     {
@@ -2569,8 +2571,8 @@ bool EnhanceGraph::createComputePasses()
         veyra::log::info("graph",std::format("RCAS sharpening on sharpness={:.3f} (test switch)",rcasSharpness_));
     }
     if(fgPseudoDepth_){
-        if(!fgPseudoDepthPass_.loadShader("FgPseudoDepth.dxil",cs)||!fgPseudoDepthPass_.create(context_.device(),cs,6,2,1))return false;
-        veyra::log::info("graph","XeSS pseudo-depth on (foreground = motion unlike the surroundings)");
+        if(!fgPseudoDepthPass_.loadShader("FgPseudoDepth.dxil",cs)||!fgPseudoDepthPass_.create(context_.device(),cs,10,4,1))return false;
+        veyra::log::info("graph",std::format("XeSS pseudo-depth on (foreground = motion unlike the surroundings) match={}",fgDepthMatch_?"far-when-unmatched":"off"));
     }
     // Stage-5 output stabiliser. Only allocated when the setting is non-zero:
     // a default session never pays for it and the dispatch is skipped below, so
@@ -2967,13 +2969,16 @@ bool EnhanceGraph::createViews()
         makeUav(context_.device(),rcasScratch_.Get(),outputFormat(),cpu(rcasPass_,2));
     }
     if(fgPseudoDepth_){
-        // Per parity i: SRVs 2i (motion) and 2i+1 (camera-motion histogram or null); UAV 4+i depth.
+        // Per parity i: SRVs 4i (motion), 4i+1 (camera-motion histogram or null), 4i+2/4i+3
+        // (current/previous flow colour); UAV 8+i depth.
         D3D12_SHADER_RESOURCE_VIEW_DESC histogram{};histogram.Format=DXGI_FORMAT_R32_UINT;histogram.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
         histogram.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;histogram.Texture2D.MipLevels=1;
         for(UINT i=0;i<2;++i){
-            stagedSrv(presentMotion_[i].Get(),DXGI_FORMAT_R16G16_FLOAT,fgPseudoDepthPass_,2*i);
-            stager_.stageSrv(fgGlobalMotion_.Get(),&histogram,fgPseudoDepthPass_.heap.Get(),2*i+1);
-            makeUav(context_.device(),presentDepth_[i].Get(),DXGI_FORMAT_R32_FLOAT,cpu(fgPseudoDepthPass_,4+i));
+            stagedSrv(presentMotion_[i].Get(),DXGI_FORMAT_R16G16_FLOAT,fgPseudoDepthPass_,4*i);
+            stager_.stageSrv(fgGlobalMotion_.Get(),&histogram,fgPseudoDepthPass_.heap.Get(),4*i+1);
+            stagedSrv(nvofInB_.Get(),DXGI_FORMAT_B8G8R8A8_UNORM,fgPseudoDepthPass_,4*i+2);
+            stagedSrv(nvofInA_.Get(),DXGI_FORMAT_B8G8R8A8_UNORM,fgPseudoDepthPass_,4*i+3);
+            makeUav(context_.device(),presentDepth_[i].Get(),DXGI_FORMAT_R32_FLOAT,cpu(fgPseudoDepthPass_,8+i));
         }
     }
     if(flowView_){
@@ -4751,12 +4756,22 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
             tracker_.transition(list,presentDepth_[parity].Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             // Camera motion only when this frame's flow ran (the histogram is this frame's).
             const float globalScale=flowGlobal_&&haveFlow&&desc_.fgUsesFlow()?float(workW_)/float(nvofW_):0.f;
-            const float c[8]={uintBits(workW_),uintBits(workH_),96.f,224.f,1.f,globalScale,0,0};
+            // Colour match only when this frame's flow ran (the flow colours are this frame's pair).
+            const float matchScale=fgDepthMatch_&&haveFlow?float(nvofW_)/float(workW_):0.f;
+            const float c[8]={uintBits(workW_),uintBits(workH_),96.f,224.f,1.f,globalScale,matchScale,.08f};
             if(flowGlobal_)tracker_.transition(list,fgGlobalMotion_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            fgPseudoDepthPass_.bind(list,c,gpuHandleOf(fgPseudoDepthPass_,2*parity).ptr,gpuHandleOf(fgPseudoDepthPass_,4+parity).ptr);
+            if(matchScale>0){
+                tracker_.transition(list,nvofInB_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                tracker_.transition(list,nvofInA_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
+            fgPseudoDepthPass_.bind(list,c,gpuHandleOf(fgPseudoDepthPass_,4*parity).ptr,gpuHandleOf(fgPseudoDepthPass_,8+parity).ptr);
             list->Dispatch((workW_+15)/16,(workH_+15)/16,1);
             tracker_.uavBarrier(list,presentDepth_[parity].Get());
             tracker_.transition(list,presentDepth_[parity].Get(),D3D12_RESOURCE_STATE_COMMON);
+            if(matchScale>0){
+                tracker_.transition(list,nvofInB_.Get(),D3D12_RESOURCE_STATE_COMMON);
+                tracker_.transition(list,nvofInA_.Get(),D3D12_RESOURCE_STATE_COMMON);
+            }
         }
         tracker_.transition(list,presentMotion_[parity].Get(),D3D12_RESOURCE_STATE_COMMON);
         // Zero guidance still has valid source history. Marking it invalid
@@ -5483,7 +5498,7 @@ void EnhanceGraph::shutdown()
     nrInstances_.clear();
     for(auto& layer:nrAutoPool_)layer.reset();nrAutoLevel_=0;nrAutoPoolReady_=nrAutoResetPending_=false;
     residualRgba_.Reset();preSrProtectionRgba_.Reset();interNrProtectionRgba_.Reset();nrFlow_.Reset();baseFlow_.Reset();
-    fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=false;rcasPass_={};rcasScratch_.Reset();rcasSharpness_=0.f;flowRefine_=flowConsistency_=false;
+    fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=fgDepthMatch_=false;rcasPass_={};rcasScratch_.Reset();rcasSharpness_=0.f;flowRefine_=flowConsistency_=false;
     fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;fgFlowMedian_.Reset();flowMedianPass_={};flowMedian_=flowSubPixel_=flowNearZero_=flowGlobal_=flowTemporal_=flowLayers_=fgFlowHistoryValid_=false;fgFlowHistory_.Reset();fgGlobalMotion_.Reset();globalMotionPass_={};
     for(unsigned i=0;i<kGeneratedPoolSlots;++i){if(fgDisableMapped_[i]&&fgDisableReadback_[i]){D3D12_RANGE written{0,0};fgDisableReadback_[i]->Unmap(0,&written);}fgDisableMapped_[i]=nullptr;fgDisable_[i].Reset();fgDisableReadback_[i].Reset();generatedLeases_[i].reset();genFrame_[i].Reset();}for(auto& lease:realLeases_)lease.reset();fgDisableInit_.Reset();
     encPass_ = ComputePass{};

@@ -17,8 +17,17 @@
 // rings then only grade how far in front. This is the foreground/background split of
 // television frame-rate converters (global-motion candidate, Biezen and de Haan, IEEE TCSVT
 // 1998), and it holds for a character larger than the rings, whose own pixels the rings see.
+// With VEYRA_TEST_FG_DEPTH_MATCH=1 a pixel whose vector does not land on matching colour in the
+// previous frame (3x3 patch, mean absolute RGB difference above matchLimit) is put on the far
+// plane. Those are the background just uncovered behind a moving character, where the flow can
+// only guess: they have no reliable motion, so they must not compete with the character for the
+// foremost vector when XeSS dilates the motion at the character's edge (occlusion handling of
+// picture-rate converters: uncovered areas take the background, de Haan, "Video processing for
+// multimedia systems", 2000). Their vectors are left unchanged.
 Texture2D<float2> motion : register(t0);   // work extent, current->previous pixels (XeSS input)
 Texture2D<uint> globalMotion : register(t1); // GlobalMotion.hlsl (x = 256: median + 128), or null
+Texture2D<float4> currentColor : register(t2);  // flow resolution, this frame
+Texture2D<float4> previousColor : register(t3); // flow resolution, previous frame
 RWTexture2D<float> depth : register(u0);   // work extent
 
 cbuffer FgPseudoDepthConstants : register(b0)
@@ -29,9 +38,22 @@ cbuffer FgPseudoDepthConstants : register(b0)
     float outerRadius;  // pixels
     float tolerance;    // vectors closer than this (pixels) agree
     float globalScale;  // work pixels per flow pixel; 0 = no camera-motion estimate
-    uint unused1;
-    uint unused2;
+    float matchScale;   // flow pixels per work pixel; 0 = no colour-match check
+    float matchLimit;   // mean absolute RGB difference (0..1) above which a vector has no match
 };
+
+float matchError(int2 q, int2 d, int2 limit)
+{
+    if (any(q + d < 0) || any(q + d > limit)) return 1; // comes from outside the picture
+    float e = 0;
+    [unroll] for (int y = -1; y <= 1; ++y)
+        [unroll] for (int x = -1; x <= 1; ++x) {
+            const int2 a = clamp(q + int2(x, y), 0, limit);
+            const int2 b = clamp(a + d, 0, limit);
+            e += dot(abs(currentColor[a].rgb - previousColor[b].rgb), float3(1, 1, 1)) / 3;
+        }
+    return e / 9;
+}
 
 static const float2 kRing[8] = {
     float2(1, 0), float2(.7071, .7071), float2(0, 1), float2(-.7071, .7071),
@@ -66,6 +88,12 @@ void main(uint3 id : SV_DispatchThreadID)
             const bool camera = length(v - g) <= tolerance + .1 * max(length(v), length(g));
             z = camera ? 1.0 : lerp(.25, .75, share);
         }
+    }
+    if (matchScale > 0 && z < 1) {
+        uint fw, fh;
+        currentColor.GetDimensions(fw, fh);
+        const int2 q = min(int2(float2(p) * matchScale), int2(fw - 1, fh - 1));
+        if (matchError(q, int2(round(v * matchScale)), int2(fw - 1, fh - 1)) > matchLimit) z = 1.0;
     }
     depth[p] = z;
 }
