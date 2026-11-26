@@ -1028,6 +1028,10 @@ private:
     bool flowLayers_=false;   // VEYRA_TEST_FLOW_LAYERS=1: two-layer occlusion rule in FlowMedian
     bool flowGrow_=false;     // VEYRA_TEST_FLOW_GROW=1: FlowGrow after FlowRefine (needs flowGlobal_)
     bool flowRegion_=false;   // VEYRA_TEST_FLOW_REGION=1: FlowRegion on the FidelityFX grid before FlowRefine
+    bool fgMaskOn_=false;     // VEYRA_TEST_FG_MASK: real frame in XeSS's UI layer where the flow is unreliable
+    float fgMaskThreshold_=0.f; // pixels of disagreement where the mask starts
+    bool fgMaskValid_=false;  // the mask was computed for the frame being composed
+    bool fgMaskHistoryValid_=false;
     float flowSmoothPenalty_=0.f; // VEYRA_TEST_FLOW_SMOOTH: FlowRefine smoothness penalty; 0 = off
     bool fgFlowHistoryValid_=false;
     ComPtr<ID3D12Resource> fgFlowHistory_; // flow extent R16G16_FLOAT, last frame's final FG motion
@@ -1079,6 +1083,10 @@ private:
     // instead of the raw FidelityFX vectors.
     ComputePass flowRegionPass_;
     ComPtr<ID3D12Resource> fgFlowRegion_;
+    // FgMask.hlsl: grid-extent weight (R16_FLOAT) and last frame's raw grid (R16G16_SINT).
+    ComputePass fgMaskPass_;
+    ComPtr<ID3D12Resource> fgMaskTex_;
+    ComPtr<ID3D12Resource> fgMaskHistory_;
     ComputePass flowViewPass_;
     bool flowView_=false;
     // VEYRA_TEST_FG_DEPTH=1: pseudo-depth for XeSS from the FG motion (FgPseudoDepth.hlsl).

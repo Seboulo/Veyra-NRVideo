@@ -9,6 +9,7 @@ Texture2D<float4> heldTex : register(t2);
 Texture2D<float4> hudMask : register(t3);
 RWTexture2D<float4> outputTex : register(u0);
 RWTexture2D<float4> uiTex : register(u1);
+Texture2D<float> fgMask : register(t8);   // FgMask.hlsl, grid extent: 1 = show the real frame
 SamplerState linearClamp : register(s1);
 cbuffer Constants : register(b0) {
     uint width, height;
@@ -18,7 +19,7 @@ cbuffer Constants : register(b0) {
     float4 regions[4];
     uint4 hudBounds;
 };
-static const uint WriteUi=1, Generated=2, WriteReal=4, HasHud=8, HistoryValid=16;
+static const uint WriteUi=1, Generated=2, WriteReal=4, HasHud=8, HistoryValid=16, HasFgMask=32;
 float3 decodeSrgb(float3 value) {
     return select(value<=0.04045,value/12.92,pow((max(value,0)+0.055)/1.055,2.4));
 }
@@ -72,6 +73,12 @@ void main(uint3 id : SV_DispatchThreadID) {
             layer=float4(enhanced.rgb*alpha,alpha);
         }
         layer=layer*(1-fgWeight)+float4(held,1)*fgWeight;
+        // Local fallback (VEYRA_TEST_FG_MASK): where the flow is unreliable the real frame covers
+        // the generated one, feathered by the bilinear upsampling of the grid mask.
+        if((flags&HasFgMask)!=0) {
+            const float masked=fgMask.SampleLevel(linearClamp,pixel/float2(size),0);
+            layer=layer*(1-masked)+float4(enhanced.rgb,1)*masked;
+        }
         layer=layer*(1-allWeight)+float4(encode(original),1)*allWeight;
         uiTex[id.xy]=layer;
     }

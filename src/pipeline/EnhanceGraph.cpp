@@ -921,6 +921,13 @@ bool EnhanceGraph::initialize(const EnhanceGraphDesc& desc)
     // VEYRA_TEST_FLOW_REGION=1: cells of repetitive texture take the camera's or the regional
     // vector when it explains a 16x16 window about as well (FlowRegion.hlsl; FidelityFX only).
     flowRegion_=flowGlobal_&&fidelityFlow&&testSwitch(L"VEYRA_TEST_FLOW_REGION");
+    // VEYRA_TEST_FG_MASK=1 (standard, 3 px), 2 (strong, 1.5 px) or a threshold in pixels: the real
+    // frame covers the generated one where the grid vectors disagree (FgMask.hlsl, XeSS UI layer).
+    fgMaskOn_=false;fgMaskThreshold_=0.f;fgMaskValid_=fgMaskHistoryValid_=false;
+    if(wchar_t value[16]{};flowGlobal_&&fidelityFlow&&presentSinkFg()&&GetEnvironmentVariableW(L"VEYRA_TEST_FG_MASK",value,16)){
+        wchar_t* end=nullptr;const float v=std::wcstof(value,&end);
+        if(end!=value&&v>0){fgMaskOn_=true;fgMaskThreshold_=v==1.f?3.f:v==2.f?1.5f:std::clamp(v,.5f,16.f);}
+    }
     // VEYRA_TEST_FLOW_SMOOTH=1 (or a cost, 0.001..0.05): FlowRefine candidates pay for their
     // distance to the median of the nine cells around (repeating textures).
     flowSmoothPenalty_=0.f;
@@ -1255,7 +1262,7 @@ bool EnhanceGraph::createResources()
         flowClaims_?"refined FidelityFX (FlowRefine+FlowClaim+FlowFill)":!flowRefine_?"validated flow":
         desc_.opticalFlowBackend==engine::OpticalFlowBackend::AmdFidelityFx?"refined FidelityFX (FlowRefine+FlowFill)":"refined NVOF (FlowRefine+FlowFill)"));
     if(flowRefine_)veyra::log::info("graph",std::format("FG motion zero-vector candidate={} bias={}",flowZeroBias_>0?"on":"off",flowZeroBias_));
-    if(flowRefine_&&(flowSubPixel_||flowMedian_||flowNearZero_||flowGlobal_||flowTemporal_||flowGrow_||flowRegion_||flowSmoothPenalty_>0))veyra::log::info("graph",std::format("FG motion sub-pixel={} weighted-median={} near-zero={} camera-motion={} temporal={} layers={} grow={} region={} smooth={:.4f} (test switches)",flowSubPixel_?"on":"off",flowMedian_?"on":"off",flowNearZero_?"on":"off",flowGlobal_?"on":"off",flowTemporal_?"on":"off",flowLayers_?"on":"off",flowGrow_?"on":"off",flowRegion_?"on":"off",flowSmoothPenalty_));
+    if(flowRefine_&&(flowSubPixel_||flowMedian_||flowNearZero_||flowGlobal_||flowTemporal_||flowGrow_||flowRegion_||fgMaskOn_||flowSmoothPenalty_>0))veyra::log::info("graph",std::format("FG motion sub-pixel={} weighted-median={} near-zero={} camera-motion={} temporal={} layers={} grow={} region={} smooth={:.4f} fg-mask={:.1f}px (test switches)",flowSubPixel_?"on":"off",flowMedian_?"on":"off",flowNearZero_?"on":"off",flowGlobal_?"on":"off",flowTemporal_?"on":"off",flowLayers_?"on":"off",flowGrow_?"on":"off",flowRegion_?"on":"off",flowSmoothPenalty_,fgMaskThreshold_));
     // Colour grade tables (v4): only allocated when the stage is enabled.
     colorActive_=desc_.color.enabled&&!desc_.nodeColor(0);
     if(colorActive_){
@@ -1312,7 +1319,7 @@ bool EnhanceGraph::createResources()
         exclusionScratch_=makeTexture(context_.device(),workW_,workH_,outputFormat(),true);
         if(!exclusionScratch_)return false;
     }
-    if(presentSinkFg()&&(desc_.exclusion.enabled||hudProtect_)){
+    if(presentSinkFg()&&(desc_.exclusion.enabled||hudProtect_||fgMaskOn_)){
         // The UI-only pass binds a spare UAV for the unused real output.
         if(!exclusionScratch_)exclusionScratch_=makeTexture(context_.device(),1,1,outputFormat(),true);
         if(!exclusionScratch_)return false;
@@ -1522,6 +1529,11 @@ bool EnhanceGraph::initNvof()
         nvofRawTex_=amdOf_->vectors();rawW_=amdOf_->width();rawH_=amdOf_->height();selectedGrid_=8;
         // FlowRegion's corrected grid (createResources runs before the grid size is known).
         if(flowRegion_){fgFlowRegion_=makeTexture(context_.device(),rawW_,rawH_,DXGI_FORMAT_R16G16_SINT,true);if(!fgFlowRegion_)return false;}
+        if(fgMaskOn_){
+            fgMaskTex_=makeTexture(context_.device(),rawW_,rawH_,DXGI_FORMAT_R16_FLOAT,true);
+            fgMaskHistory_=makeTexture(context_.device(),rawW_,rawH_,DXGI_FORMAT_R16G16_SINT,false);
+            if(!fgMaskTex_||!fgMaskHistory_)return false;
+        }
         mvecSource_="amd-fidelityfx + photometric confidence";
         return true;
     }
@@ -2546,7 +2558,7 @@ bool EnhanceGraph::createComputePasses()
 {
     std::vector<uint8_t> cs;
     if((desc_.exclusion.enabled||exclusionUi_[0])&&(!exclusionPass_.loadShader("EffectExclusion.dxil",cs)||
-       !exclusionPass_.create(context_.device(),cs,kOutputPoolSlots*12,4,2,28,0,true)))return false;
+       !exclusionPass_.create(context_.device(),cs,kOutputPoolSlots*12+1,4,2,28,1,true)))return false;
     for(auto& instance:additionalColorInstances_)if(instance&&!instance->createPass(context_.device()))return false;
     for(auto& instance:nodeColorInstances_)if(instance&&!instance->createPass(context_.device()))return false;
     {
@@ -2576,6 +2588,7 @@ bool EnhanceGraph::createComputePasses()
         if(flowMedian_&&(!flowMedianPass_.loadShader("FlowMedian.dxil",cs)||!flowMedianPass_.create(context_.device(),cs,6,5,1)))return false;
         if(flowGrow_&&(!flowGrowPass_.loadShader("FlowGrow.dxil",cs)||!flowGrowPass_.create(context_.device(),cs,5,4,1)))return false;
         if(flowRegion_&&(!flowRegionPass_.loadShader("FlowRegion.dxil",cs)||!flowRegionPass_.create(context_.device(),cs,5,4,1)))return false;
+        if(fgMaskOn_&&(!fgMaskPass_.loadShader("FgMask.dxil",cs)||!fgMaskPass_.create(context_.device(),cs,4,3,1)))return false;
     }
     {
         wchar_t view[4]{};
@@ -2822,6 +2835,13 @@ bool EnhanceGraph::createViews()
             stager_.stageSrv(fgGlobalMotion_.Get(),&single,flowRegionPass_.heap.Get(),3);
             makeUav(context_.device(),fgFlowRegion_.Get(),DXGI_FORMAT_R16G16_SINT,cpu(flowRegionPass_,4));
         }
+        if(fgMaskOn_){
+            // FgMask: 0 raw grid vectors, 1 last frame's raw grid, 2 camera-motion histogram; 3 weight.
+            stager_.stageSrv(nvofRawTex_.Get(),&raw,fgMaskPass_.heap.Get(),0);
+            stager_.stageSrv(fgMaskHistory_.Get(),&raw,fgMaskPass_.heap.Get(),1);
+            stager_.stageSrv(fgGlobalMotion_.Get(),&single,fgMaskPass_.heap.Get(),2);
+            makeUav(context_.device(),fgMaskTex_.Get(),DXGI_FORMAT_R16_FLOAT,cpu(fgMaskPass_,3));
+        }
         if(flowGlobal_){
             // GlobalMotion: 0 raw grid vectors; 1 histogram.
             stager_.stageSrv(nvofRawTex_.Get(),&raw,globalMotionPass_.heap.Get(),0);
@@ -3059,6 +3079,8 @@ bool EnhanceGraph::createViews()
         context_.device()->CreateUnorderedAccessView(confTex_.Get(), nullptr, &uc, cpu(densifyPass_, 6));
     }
     if(exclusionPass_.heap){
+        // t8 (extra table, last slot): FgMask's grid weight, a null view without VEYRA_TEST_FG_MASK.
+        if(viewsTex)stagedSrv(fgMaskTex_.Get(),DXGI_FORMAT_R16_FLOAT,exclusionPass_,kOutputPoolSlots*12);
         const unsigned outputs=desc_.exclusion.enabled?kOutputPoolSlots:2;
         for(unsigned output=0;output<outputs;++output){
             auto* enhanced=output<2?videoFrame_[output].Get():genFrame_[output-2].Get();
@@ -3257,8 +3279,9 @@ void EnhanceGraph::composeExclusion(ID3D12GraphicsCommandList* list,unsigned out
     auto* original=sourceReferences_[rawParity].Get();
     auto* held=videoFrame_[generated?rawParity:1-rawParity].Get();
     const bool overlayHud=hudProtect_&&ui;
+    const bool masked=ui&&fgMaskOn_&&fgMaskValid_;
     const unsigned flags=(ui?1u:0u)|(generated?2u:0u)|(desc_.exclusion.enabled?4u:0u)|
-                         (overlayHud?8u:0u)|(historyValid?16u:0u);
+                         (overlayHud?8u:0u)|(historyValid?16u:0u)|(masked?32u:0u);
     constexpr auto read=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     constexpr auto write=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     constexpr auto common=D3D12_RESOURCE_STATE_COMMON;
@@ -3282,7 +3305,8 @@ void EnhanceGraph::composeExclusion(ID3D12GraphicsCommandList* list,unsigned out
         constants[26]=uintBits(b.right);constants[27]=uintBits(b.bottom);
     }
     const auto base=(output*2+rawParity)*6;
-    exclusionPass_.bind(list,constants,gpuHandleOf(exclusionPass_,base).ptr,gpuHandleOf(exclusionPass_,base+4).ptr);
+    if(masked)tracker_.transition(list,fgMaskTex_.Get(),read);
+    exclusionPass_.bind(list,constants,gpuHandleOf(exclusionPass_,base).ptr,gpuHandleOf(exclusionPass_,base+4).ptr,gpuHandleOf(exclusionPass_,kOutputPoolSlots*12).ptr);
     list->Dispatch((workW_+15)/16,(workH_+15)/16,1);
     if(generated){
         tracker_.transition(list,destination,D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -3296,6 +3320,7 @@ void EnhanceGraph::composeExclusion(ID3D12GraphicsCommandList* list,unsigned out
     }
     if(historyValid)tracker_.transition(list,held,common);
     if(ui)tracker_.transition(list,exclusionUi_[rawParity].Get(),common);
+    if(masked)tracker_.transition(list,fgMaskTex_.Get(),common);
 }
 
 bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, FrameOutputs& out, uint64_t sourceFrameId, const ColorDescription* color, const HardwareSurfaceInput* hardwareSurface, bool retainReferences, const FgAdmission& admitFg, unsigned previewMultiplier, bool pausedResidualRefresh, const std::function<void()>& previewCheckpoint, const AVFrame* doviEl, const DoviP7Constants* doviP7)
@@ -4055,6 +4080,23 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                     const float rc[8]={uintBits(rawW_),uintBits(rawH_),uintBits(nvofW_),uintBits(nvofH_),uintBits(selectedGrid_),.004f,uintBits(refineFlags),flowZeroBias_};
                     flowRefinePass_.bind(list,rc,gpuHandleOf(flowRefinePass_,0).ptr,gpuHandleOf(flowRefinePass_,7).ptr);
                     list->Dispatch((nvofW_+15)/16,(nvofH_+15)/16,1);
+                    if(fgMaskOn_){
+                        // Local fallback weight from this frame's grid, then keep the grid for the next one.
+                        tracker_.transition(list,fgMaskTex_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                        tracker_.transition(list,fgMaskHistory_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                        const bool history=fgMaskHistoryValid_&&prevValid_&&amdOf_&&amdOf_->warmedUp();
+                        const float mc[8]={uintBits(rawW_),uintBits(rawH_),fgMaskThreshold_,uintBits(history?1u:0u),0,0,0,0};
+                        fgMaskPass_.bind(list,mc,gpuHandleOf(fgMaskPass_,0).ptr,gpuHandleOf(fgMaskPass_,3).ptr);
+                        list->Dispatch((rawW_+15)/16,(rawH_+15)/16,1);
+                        tracker_.uavBarrier(list,fgMaskTex_.Get());
+                        tracker_.transition(list,fgMaskTex_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                        tracker_.transition(list,nvofRawTex_.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE);
+                        tracker_.transition(list,fgMaskHistory_.Get(),D3D12_RESOURCE_STATE_COPY_DEST);
+                        list->CopyResource(fgMaskHistory_.Get(),nvofRawTex_.Get());
+                        tracker_.transition(list,fgMaskHistory_.Get(),D3D12_RESOURCE_STATE_COMMON);
+                        tracker_.transition(list,nvofRawTex_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                        fgMaskValid_=amdOf_&&amdOf_->warmedUp();fgMaskHistoryValid_=true;
+                    }
                     tracker_.uavBarrier(list,fgFlowRefined_.Get());
                     tracker_.transition(list,fgFlowRefined_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                     if(flowGrow_){
@@ -5558,7 +5600,7 @@ void EnhanceGraph::shutdown()
     for(auto& layer:nrAutoPool_)layer.reset();nrAutoLevel_=0;nrAutoPoolReady_=nrAutoResetPending_=false;
     residualRgba_.Reset();preSrProtectionRgba_.Reset();interNrProtectionRgba_.Reset();nrFlow_.Reset();baseFlow_.Reset();
     fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=fgDepthMatch_=false;rcasPass_={};rcasScratch_.Reset();rcasSharpness_=0.f;flowRefine_=flowConsistency_=false;
-    fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;fgFlowMedian_.Reset();flowMedianPass_={};flowMedian_=flowSubPixel_=flowNearZero_=flowGlobal_=flowTemporal_=flowLayers_=fgFlowHistoryValid_=false;fgFlowHistory_.Reset();fgGlobalMotion_.Reset();globalMotionPass_={};flowGrow_=false;flowSmoothPenalty_=0.f;fgFlowGrown_.Reset();flowGrowPass_={};flowRegion_=false;fgFlowRegion_.Reset();flowRegionPass_={};
+    fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;fgFlowMedian_.Reset();flowMedianPass_={};flowMedian_=flowSubPixel_=flowNearZero_=flowGlobal_=flowTemporal_=flowLayers_=fgFlowHistoryValid_=false;fgFlowHistory_.Reset();fgGlobalMotion_.Reset();globalMotionPass_={};flowGrow_=false;flowSmoothPenalty_=0.f;fgFlowGrown_.Reset();flowGrowPass_={};flowRegion_=false;fgFlowRegion_.Reset();flowRegionPass_={};fgMaskOn_=fgMaskValid_=fgMaskHistoryValid_=false;fgMaskThreshold_=0.f;fgMaskTex_.Reset();fgMaskHistory_.Reset();fgMaskPass_={};
     for(unsigned i=0;i<kGeneratedPoolSlots;++i){if(fgDisableMapped_[i]&&fgDisableReadback_[i]){D3D12_RANGE written{0,0};fgDisableReadback_[i]->Unmap(0,&written);}fgDisableMapped_[i]=nullptr;fgDisable_[i].Reset();fgDisableReadback_[i].Reset();generatedLeases_[i].reset();genFrame_[i].Reset();}for(auto& lease:realLeases_)lease.reset();fgDisableInit_.Reset();
     encPass_ = ComputePass{};
     blitPass_ = ComputePass{};hdrVideoSrPass_={};srPrescalePass_={};srResolvePass_={};firstSrRestorePass_={};
