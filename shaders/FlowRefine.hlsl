@@ -40,11 +40,21 @@ cbuffer FlowRefineConstants : register(b0)
                      // 16 small vectors around zero as well (needs zeroBias > 0);
                      // 32 camera (global) motion candidate and foreground preference;
                      // 64 previousMotion holds last frame's motion (temporal candidate);
-                     // 128 foreground candidate (globalMotion rows 2-3, needs 32)
+                     // 128 foreground candidate (globalMotion rows 2-3, needs 32);
+                     // 256 smoothness penalty, its size in bits 16-31 (1e-5 units)
     float zeroBias;  // > 0: also try the zero vector, at this extra cost; 0: off
 };
 
 float luma(float3 c) { return dot(c, float3(.2126, .7152, .0722)); }
+
+// Median of nine values (insertion sort, unrolled).
+float median9(float v[9])
+{
+    [unroll] for (int i = 1; i < 9; ++i)
+        [unroll] for (int j = i; j > 0; --j)
+            if (v[j] < v[j - 1]) { const float t = v[j]; v[j] = v[j - 1]; v[j - 1] = t; }
+    return v[4];
+}
 
 // Equiangular (V-shaped) fit of three matching costs at -1, 0, +1 pixel: the sub-pixel offset
 // of the minimum. For an absolute-difference cost this line fit is less biased toward whole
@@ -91,15 +101,42 @@ void main(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint index :
     const int2 cellLimit = int2(gridW - 1, gridH - 1);
     float bestCost = 1e9;
     float2 best = 0;
+    // Smoothness penalty of 3-D recursive search (de Haan et al. 1993; Biezen and de Haan 1998):
+    // a candidate pays for its distance to the local motion, here the median of the nine cells
+    // around. On a repeating texture (a wooden lattice) a cell vector off by one period matches
+    // almost as well as the true one, and in a block of such cells the generated frame tears
+    // the pattern. The median outvotes those blocks. The penalty only applies where the median
+    // itself matches (medianLimit): at a character's edge the median may be the background's
+    // vector, which does not match the character, and the character keeps its own.
+    float2 cells[9];
+    [unroll] for (int k = 0; k < 9; ++k)
+        cells[k] = float2(rawFlow[clamp(cell + int2(k % 3 - 1, k / 3 - 1), int2(0, 0), cellLimit)]) * scale;
+    const float smoothPenalty = (flags & 256u) != 0 ? float(flags >> 16) * 1e-5 : 0;
+    const float medianLimit = .03;
+    float2 localMedian = 0;
+    bool smooth = false;
+    if (smoothPenalty > 0) {
+        float xs[9], ys[9];
+        [unroll] for (int k = 0; k < 9; ++k) { xs[k] = cells[k].x; ys[k] = cells[k].y; }
+        localMedian = float2(median9(xs), median9(ys));
+        const int2 q = p + int2(round(localMedian));
+        float cost = 0;
+        [unroll] for (int j = 0; j < 9; ++j)
+            cost += abs(current[j] - luma(previousColor[clamp(q + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
+        cost /= 9;
+        smooth = cost < medianLimit;
+        // Where it matches, the median is a candidate of its own (like the own cell, no tie bias).
+        if (smooth) { bestCost = cost; best = localMedian; }
+    }
     [unroll] for (int k = 0; k < 9; ++k) {
-        const int2 offset = int2(k % 3 - 1, k / 3 - 1);
-        const float2 v = float2(rawFlow[clamp(cell + offset, int2(0, 0), cellLimit)]) * scale;
+        const float2 v = cells[k];
         const int2 q = p + int2(round(v));
         float cost = 0;
         [unroll] for (int j = 0; j < 9; ++j)
             cost += abs(current[j] - luma(previousColor[clamp(q + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
         cost /= 9;
         if (k != 4) cost += tieBias;
+        if (smooth) cost += smoothPenalty * saturate(length(v - localMedian) / 2);
         if (cost < bestCost) { bestCost = cost; best = v; }
     }
     // Temporal candidate of 3-D recursive search (de Haan et al. 1993): the vector this pixel
@@ -113,6 +150,7 @@ void main(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint index :
         [unroll] for (int j = 0; j < 9; ++j)
             cost += abs(current[j] - luma(previousColor[clamp(q + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
         cost = cost / 9 + tieBias;
+        if (smooth) cost += smoothPenalty * saturate(length(v - localMedian) / 2);
         // Whole pixels like the other candidates; sub-pixel refinement follows.
         if (cost < bestCost) { bestCost = cost; best = float2(int2(round(v))); }
     }
@@ -126,6 +164,7 @@ void main(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint index :
         [unroll] for (int j = 0; j < 9; ++j)
             cost += abs(current[j] - luma(previousColor[clamp(q + int2(j % 3 - 1, j / 3 - 1), int2(0, 0), limit)].rgb));
         cost = cost / 9 + tieBias;
+        if (smooth) cost += smoothPenalty * saturate(length(global - localMedian) / 2);
         if (cost < bestCost) { bestCost = cost; best = global; }
     }
     // Foreground motion (GlobalMotion.hlsl rows 2-3): the character's own vector, offered

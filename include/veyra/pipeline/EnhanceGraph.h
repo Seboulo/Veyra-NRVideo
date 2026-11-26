@@ -1026,6 +1026,8 @@ private:
     bool flowGlobal_=false;   // VEYRA_TEST_FLOW_GLOBAL=1: camera-motion candidate + foreground preference
     bool flowTemporal_=false; // VEYRA_TEST_FLOW_TEMPORAL=1: last frame's FG motion as a candidate
     bool flowLayers_=false;   // VEYRA_TEST_FLOW_LAYERS=1: two-layer occlusion rule in FlowMedian
+    bool flowGrow_=false;     // VEYRA_TEST_FLOW_GROW=1: FlowGrow after FlowRefine (needs flowGlobal_)
+    float flowSmoothPenalty_=0.f; // VEYRA_TEST_FLOW_SMOOTH: FlowRefine smoothness penalty; 0 = off
     bool fgFlowHistoryValid_=false;
     ComPtr<ID3D12Resource> fgFlowHistory_; // flow extent R16G16_FLOAT, last frame's final FG motion
     ComPtr<ID3D12Resource> fgFlowClaims_,fgFlowAgreement_;
@@ -1068,6 +1070,10 @@ private:
     ComPtr<ID3D12Resource> fgGlobalMotion_;
     ComputePass flowMedianPass_;
     ComPtr<ID3D12Resource> fgFlowMedian_;
+    // FlowGrow.hlsl output (flow extent, refined layout) when flowGrow_; copied back into
+    // fgFlowRefined_ so FlowClaim and FlowFill read it unchanged.
+    ComputePass flowGrowPass_;
+    ComPtr<ID3D12Resource> fgFlowGrown_;
     ComputePass flowViewPass_;
     bool flowView_=false;
     // VEYRA_TEST_FG_DEPTH=1: pseudo-depth for XeSS from the FG motion (FgPseudoDepth.hlsl).
