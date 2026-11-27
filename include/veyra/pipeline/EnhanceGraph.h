@@ -62,6 +62,7 @@ class AmfVideoSrBackend;
 class FsrFgPresenter;
 class AmfFrcBackend;
 class RifeDmlBackend;
+class RifeFlow;
 }
 
 namespace veyra::ngx {
@@ -1011,6 +1012,13 @@ private:
     // desc.fgMotionRefine=false (or VEYRA_TEST_FLOW_REFINE=0) restores the previous input.
     bool flowRefine_=false;
     ComPtr<ID3D12Resource> fgFlowRefined_,fgFlowFilled_,fgBaseFlow_;
+    // VEYRA_TEST_FLOW_RIFE=1 (FidelityFX, flowRefine_): fgBaseFlow_ comes from RIFE's dense
+    // flow (gfx::RifeFlow, a quarter of the work size) instead of FlowRefine..FlowFill on the
+    // 8x8 grid. The FidelityFX flow still runs (NR/SR, camera motion, scene changes). If the
+    // model or runtime is missing the refined FidelityFX motion stays in use.
+    bool rifeFlowRequested_=false;
+    unsigned rifeFlowDivisor_=4;
+    std::unique_ptr<gfx::RifeFlow> rifeFlow_;
     // NVOF backward output (previous->current) for the refinement's forward-backward check
     // (uncovered background). Only with flowRefine_; VEYRA_TEST_FLOW_CONSISTENCY=0 leaves
     // NVOF forward-only (photometric refinement). NR/SR never read it.

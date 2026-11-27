@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <wrl/client.h>
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -404,6 +405,204 @@ void RifeDmlBackend::shutdown() {
     p = Impl{};
     p.rt = rt;
 }
+namespace {
+// XeSS motion from RIFE's flow: rife_v4.26 unless VEYRA_TEST_FLOW_RIFE_MODEL names
+// another flow model built by make_rife_flow_models.py (file <name>_flow_fp16.onnx).
+std::string flowModel() {
+    wchar_t value[64]{};
+    if (GetEnvironmentVariableW(L"VEYRA_TEST_FLOW_RIFE_MODEL", value, 64)) {
+        std::string name;
+        for (const wchar_t* c = value; *c; ++c) name.push_back(char(*c));
+        return name;
+    }
+    return "rife_v4.26";
+}
+}
+
+struct RifeFlow::Impl {
+    const Runtime* rt = nullptr;
+    ID3D12Device* device = nullptr;
+    ComPtr<IDMLDevice> dmlDevice;
+    OrtSessionOptions* options = nullptr;
+    OrtSession* session = nullptr;
+    OrtMemoryInfo* memory = nullptr;
+    OrtIoBinding* binding = nullptr;
+    struct Tensor { ComPtr<ID3D12Resource> buffer; void* allocation = nullptr; OrtValue* value = nullptr; };
+    Tensor img0, img1, timestep, flow, mask;
+    uint32_t inputW = 0, inputH = 0, motionW = 0, motionH = 0, flowW = 0, flowH = 0, pw = 0, ph = 0;
+    // Pack heap: [0] previous SRV, [1] current SRV, [2] img0, [3] img1, [4] timestep UAVs.
+    // Convert heap: [0] null SRV, [1] flow tensor UAV, [2] motion UAV.
+    pipeline::ComputePass pack, convert;
+    ComPtr<ID3D12DescriptorHeap> staging;   // SRVs are created here and copied (see DescriptorStager)
+    std::string model;
+    bool ok = false;
+
+    bool check(OrtStatus* s, const char* what) {
+        if (!s) return true;
+        log::error("rife-flow", std::format("{} failed: {}", what, rt->api->GetErrorMessage(s)));
+        rt->api->ReleaseStatus(s);
+        return false;
+    }
+    bool makeTensor(Tensor& t, int64_t channels) {
+        const uint64_t bytes = uint64_t(channels) * pw * ph * 4;
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC rd{D3D12_RESOURCE_DIMENSION_BUFFER, 0, bytes, 1, 1, 1, DXGI_FORMAT_UNKNOWN, {1, 0},
+                               D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
+        if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&t.buffer)))) {
+            log::error("rife-flow", std::format("tensor buffer {} bytes failed", bytes));
+            return false;
+        }
+        if (!check(rt->dml->CreateGPUAllocationFromD3DResource(t.buffer.Get(), &t.allocation), "CreateGPUAllocationFromD3DResource")) return false;
+        const int64_t shape[4] = {1, channels, int64_t(ph), int64_t(pw)};
+        return check(rt->api->CreateTensorWithDataAsOrtValue(memory, t.allocation, size_t(bytes), shape, 4,
+                                                             ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &t.value), "CreateTensor");
+    }
+    void release(Tensor& t) {
+        if (t.value) rt->api->ReleaseValue(t.value);
+        if (t.allocation) rt->dml->FreeGPUAllocation(t.allocation);
+        t = {};
+    }
+    static D3D12_CPU_DESCRIPTOR_HANDLE cpu(ID3D12DescriptorHeap* heap, UINT increment, UINT slot) {
+        return {heap->GetCPUDescriptorHandleForHeapStart().ptr + uint64_t(slot) * increment};
+    }
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu(const pipeline::ComputePass& pass, UINT slot) const {
+        return {pass.heap->GetGPUDescriptorHandleForHeapStart().ptr + uint64_t(slot) * pass.increment};
+    }
+    void rawUav(ID3D12Resource* buffer, uint64_t channels, D3D12_CPU_DESCRIPTOR_HANDLE handle) const {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC u{};
+        u.Format = DXGI_FORMAT_R32_TYPELESS;
+        u.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        u.Buffer.NumElements = UINT(channels * pw * ph);
+        u.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        device->CreateUnorderedAccessView(buffer, nullptr, &u, handle);
+    }
+    // SRV created in the non-visible staging heap, then copied into the pass heap.
+    void stagedSrv(ID3D12Resource* texture, DXGI_FORMAT format, UINT stagingSlot, const pipeline::ComputePass& pass, UINT slot) {
+        const UINT increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        D3D12_SHADER_RESOURCE_VIEW_DESC v{};
+        v.Format = format; v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; v.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(texture, &v, cpu(staging.Get(), increment, stagingSlot));
+        device->CopyDescriptorsSimple(1, cpu(pass.heap.Get(), pass.increment, slot), cpu(staging.Get(), increment, stagingSlot),
+                                      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
+};
+
+RifeFlow::RifeFlow() : p_(std::make_unique<Impl>()) {}
+RifeFlow::~RifeFlow() { shutdown(); }
+
+bool RifeFlow::initialize(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* previous, ID3D12Resource* current,
+                          ID3D12Resource* motion, unsigned divisor) {
+    shutdown();
+    auto& p = *p_;
+    p.rt = &runtime();
+    if (!p.rt->api) { log::error("rife-flow", "runtime unavailable: " + p.rt->error); return false; }
+    if (!device || !queue || !previous || !current || !motion || divisor < 2 || divisor > 8) { log::error("rife-flow", "invalid arguments"); return false; }
+    const auto in = current->GetDesc(), prev = previous->GetDesc(), out = motion->GetDesc();
+    if (in.Format != DXGI_FORMAT_B8G8R8A8_UNORM || prev.Format != in.Format || prev.Width != in.Width || prev.Height != in.Height ||
+        out.Format != DXGI_FORMAT_R16G16_FLOAT) {
+        log::error("rife-flow", "unexpected input or motion texture");
+        return false;
+    }
+    p.device = device;
+    p.inputW = uint32_t(in.Width); p.inputH = in.Height;
+    p.motionW = uint32_t(out.Width); p.motionH = out.Height;
+    p.flowW = std::max(32u, (p.motionW + divisor / 2) / divisor); p.flowH = std::max(32u, (p.motionH + divisor / 2) / divisor);
+    p.model = flowModel();
+    const uint32_t pad = padMultiple(p.model);
+    p.pw = padded(p.flowW, pad); p.ph = padded(p.flowH, pad);
+    const auto modelPath = runtimeDirectory() / (p.model + "_flow_fp16.onnx");
+    std::error_code ec;
+    if (!std::filesystem::exists(modelPath, ec)) { log::error("rife-flow", "model missing: " + modelPath.string()); return false; }
+    if (FAILED(p.rt->createDevice(device, DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(&p.dmlDevice)))) { log::error("rife-flow", "DMLCreateDevice failed"); return false; }
+    const auto* api = p.rt->api;
+    if (!p.check(api->CreateSessionOptions(&p.options), "CreateSessionOptions") ||
+        !p.check(api->DisableMemPattern(p.options), "DisableMemPattern") ||
+        !p.check(api->SetSessionExecutionMode(p.options, ORT_SEQUENTIAL), "SetSessionExecutionMode") ||
+        !p.check(api->SetSessionGraphOptimizationLevel(p.options, ORT_ENABLE_ALL), "SetSessionGraphOptimizationLevel") ||
+        !p.check(api->AddFreeDimensionOverrideByName(p.options, "height", int64_t(p.ph)), "height override") ||
+        !p.check(api->AddFreeDimensionOverrideByName(p.options, "width", int64_t(p.pw)), "width override") ||
+        !p.check(p.rt->dml->SessionOptionsAppendExecutionProvider_DML1(p.options, p.dmlDevice.Get(), queue), "AppendExecutionProvider_DML1"))
+        return false;
+    const auto started = std::chrono::steady_clock::now();
+    if (!p.check(api->CreateSession(p.rt->env, modelPath.c_str(), p.options, &p.session), "CreateSession")) return false;
+    const double sessionMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    if (!p.check(api->CreateMemoryInfo("DML", OrtDeviceAllocator, 0, OrtMemTypeDefault, &p.memory), "CreateMemoryInfo")) return false;
+    if (!p.makeTensor(p.img0, 3) || !p.makeTensor(p.img1, 3) || !p.makeTensor(p.timestep, 1) || !p.makeTensor(p.flow, 4) || !p.makeTensor(p.mask, 1)) return false;
+    if (!p.check(api->CreateIoBinding(p.session, &p.binding), "CreateIoBinding") ||
+        !p.check(api->BindInput(p.binding, "img0", p.img0.value), "BindInput img0") ||
+        !p.check(api->BindInput(p.binding, "img1", p.img1.value), "BindInput img1") ||
+        !p.check(api->BindInput(p.binding, "timestep", p.timestep.value), "BindInput timestep") ||
+        !p.check(api->BindOutput(p.binding, "flow", p.flow.value), "BindOutput flow") ||
+        !p.check(api->BindOutput(p.binding, "mask", p.mask.value), "BindOutput mask"))
+        return false;
+    std::vector<uint8_t> cs;
+    if (!p.pack.loadShader("RifeFlowPack.dxil", cs) || !p.pack.create(device, cs, 5, 2, 3) ||
+        !p.convert.loadShader("RifeFlowToMotion.dxil", cs) || !p.convert.create(device, cs, 3, 1, 2))
+        return false;
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 3; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    if (FAILED(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&p.staging)))) return false;
+    p.stagedSrv(previous, in.Format, 0, p.pack, 0);
+    p.stagedSrv(current, in.Format, 1, p.pack, 1);
+    p.stagedSrv(nullptr, in.Format, 2, p.convert, 0);
+    p.rawUav(p.img0.buffer.Get(), 3, Impl::cpu(p.pack.heap.Get(), p.pack.increment, 2));
+    p.rawUav(p.img1.buffer.Get(), 3, Impl::cpu(p.pack.heap.Get(), p.pack.increment, 3));
+    p.rawUav(p.timestep.buffer.Get(), 1, Impl::cpu(p.pack.heap.Get(), p.pack.increment, 4));
+    p.rawUav(p.flow.buffer.Get(), 4, Impl::cpu(p.convert.heap.Get(), p.convert.increment, 1));
+    pipeline::makeUav(device, motion, out.Format, Impl::cpu(p.convert.heap.Get(), p.convert.increment, 2));
+    p.ok = true;
+    log::info("rife-flow", std::format("ready model={} input={}x{} flow={}x{} tensor {}x{} motion={}x{} session={:.0f} ms",
+                                       p.model, p.inputW, p.inputH, p.flowW, p.flowH, p.pw, p.ph, p.motionW, p.motionH, sessionMs));
+    return true;
+}
+
+bool RifeFlow::pack(ID3D12GraphicsCommandList* list) {
+    auto& p = *p_;
+    if (!p.ok || !list) return false;
+    const float t = 0.5f;
+    uint32_t c[8] = {p.inputW, p.inputH, p.flowW, p.flowH, p.pw, p.ph, 0, 0};
+    std::memcpy(&c[6], &t, 4);
+    p.pack.bind(list, reinterpret_cast<const float*>(c), p.gpu(p.pack, 0).ptr, p.gpu(p.pack, 2).ptr);
+    list->Dispatch((p.pw + 15) / 16, (p.ph + 15) / 16, 1);
+    D3D12_RESOURCE_BARRIER b[3]{};
+    ID3D12Resource* written[3] = {p.img0.buffer.Get(), p.img1.buffer.Get(), p.timestep.buffer.Get()};
+    for (int i = 0; i < 3; ++i) { b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; b[i].UAV.pResource = written[i]; }
+    list->ResourceBarrier(3, b);
+    return true;
+}
+
+bool RifeFlow::run() {
+    auto& p = *p_;
+    return p.ok && p.check(p.rt->api->RunWithBinding(p.session, nullptr, p.binding), "RunWithBinding");
+}
+
+bool RifeFlow::convert(ID3D12GraphicsCommandList* list) {
+    auto& p = *p_;
+    if (!p.ok || !list) return false;
+    // Three iterations: enough on 2026-11-27 captures (offline emulation, shader_sim.py).
+    const uint32_t c[8] = {p.motionW, p.motionH, p.flowW, p.flowH, p.pw, p.ph, 3, 0};
+    p.convert.bind(list, reinterpret_cast<const float*>(c), p.gpu(p.convert, 0).ptr, p.gpu(p.convert, 1).ptr);
+    list->Dispatch((p.motionW + 15) / 16, (p.motionH + 15) / 16, 1);
+    return true;
+}
+
+bool RifeFlow::ready() const { return p_->ok; }
+const std::string& RifeFlow::modelName() const { return p_->model; }
+
+void RifeFlow::shutdown() {
+    auto& p = *p_;
+    if (!p.rt || !p.rt->api) { p = Impl{}; return; }
+    const auto* api = p.rt->api;
+    if (p.binding) api->ReleaseIoBinding(p.binding);
+    for (auto* t : {&p.img0, &p.img1, &p.timestep, &p.flow, &p.mask}) p.release(*t);
+    if (p.session) api->ReleaseSession(p.session);
+    if (p.options) api->ReleaseSessionOptions(p.options);
+    if (p.memory) api->ReleaseMemoryInfo(p.memory);
+    const Runtime* rt = p.rt;
+    p = Impl{};
+    p.rt = rt;
+}
 #else
 struct RifeDmlBackend::Impl { std::string model; };
 RifeDmlBackend::RifeDmlBackend() : p_(std::make_unique<Impl>()) {}
@@ -421,5 +620,19 @@ bool RifeDmlBackend::hasPair() const { return false; }
 bool RifeDmlBackend::ready() const { return false; }
 const std::string& RifeDmlBackend::modelName() const { return p_->model; }
 void RifeDmlBackend::shutdown() {}
+
+struct RifeFlow::Impl { std::string model; };
+RifeFlow::RifeFlow() : p_(std::make_unique<Impl>()) {}
+RifeFlow::~RifeFlow() = default;
+bool RifeFlow::initialize(ID3D12Device*, ID3D12CommandQueue*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, unsigned) {
+    log::error("rife-flow", "this build has no ONNX Runtime DirectML headers");
+    return false;
+}
+bool RifeFlow::pack(ID3D12GraphicsCommandList*) { return false; }
+bool RifeFlow::run() { return false; }
+bool RifeFlow::convert(ID3D12GraphicsCommandList*) { return false; }
+bool RifeFlow::ready() const { return false; }
+const std::string& RifeFlow::modelName() const { return p_->model; }
+void RifeFlow::shutdown() {}
 #endif
 }

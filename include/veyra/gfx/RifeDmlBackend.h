@@ -47,4 +47,40 @@ private:
     struct Impl;
     std::unique_ptr<Impl> p_;
 };
+
+// XeSS frame generation motion from RIFE's flow (VEYRA_TEST_FLOW_RIFE=1). The
+// flow-only model (tools/rife_models/make_rife_flow_models.py, default
+// rife_v4.26_flow_fp16.onnx, VEYRA_TEST_FLOW_RIFE_MODEL overrides) runs on the
+// previous and current optical-flow input frames at 1/divisor of the motion
+// size with t = 0.5. RifeFlowToMotion.hlsl turns its two flows (from the middle
+// picture to each frame) into current->previous motion in motion-texture
+// pixels: per pixel x, mv = v(x + mv/2) with v = F_t->0 - F_t->1, solved by
+// fixed-point sampling. Dense per-pixel vectors where the FidelityFX grid gives
+// one integer vector per 8x8 cell (repetitive textures, fast moving edges).
+// Per real frame: pack() records the model inputs, the owner submits, run()
+// queues the network on the same queue (no CPU wait), convert() records the
+// motion. Queue order alone orders the three steps, as for RifeDmlBackend.
+class RifeFlow {
+public:
+    RifeFlow();
+    ~RifeFlow();
+    RifeFlow(const RifeFlow&) = delete;
+    RifeFlow& operator=(const RifeFlow&) = delete;
+    // previous/current: fixed B8G8R8A8_UNORM textures of equal size; motion: a
+    // fixed R16G16_FLOAT texture. divisor 2..8 (4: a quarter of the motion size).
+    bool initialize(ID3D12Device*, ID3D12CommandQueue*, ID3D12Resource* previous, ID3D12Resource* current,
+                    ID3D12Resource* motion, unsigned divisor);
+    // previous and current in NON_PIXEL_SHADER_RESOURCE.
+    bool pack(ID3D12GraphicsCommandList*);
+    // After the list holding pack() was submitted.
+    bool run();
+    // motion in UNORDERED_ACCESS.
+    bool convert(ID3D12GraphicsCommandList*);
+    bool ready() const;
+    const std::string& modelName() const;
+    void shutdown();
+private:
+    struct Impl;
+    std::unique_ptr<Impl> p_;
+};
 }

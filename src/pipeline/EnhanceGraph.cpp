@@ -904,6 +904,12 @@ bool EnhanceGraph::initialize(const EnhanceGraphDesc& desc)
     auto testSwitch=[](const wchar_t* name){wchar_t v[4]{};return GetEnvironmentVariableW(name,v,4)&&v[0]==L'1';};
     flowSubPixel_=flowRefine_&&fidelityFlow&&testSwitch(L"VEYRA_TEST_FLOW_SUBPIXEL");
     flowMedian_=flowRefine_&&testSwitch(L"VEYRA_TEST_FLOW_MEDIAN");
+    // VEYRA_TEST_FLOW_RIFE=1: FG motion from RIFE's dense flow at a quarter of the work size
+    // (2: half) instead of the FidelityFX grid refinement (gfx::RifeFlow, initNvof()).
+    rifeFlowRequested_=false;rifeFlowDivisor_=4;
+    if(wchar_t value[4]{};flowRefine_&&fidelityFlow&&GetEnvironmentVariableW(L"VEYRA_TEST_FLOW_RIFE",value,4)&&(value[0]==L'1'||value[0]==L'2')){
+        rifeFlowRequested_=true;rifeFlowDivisor_=value[0]==L'2'?2u:4u;
+    }
     // VEYRA_TEST_FLOW_NEAR=1: small vectors around zero too. VEYRA_TEST_FLOW_ZERO_BIAS=<cost>:
     // how much better (mean luma difference, 0..1) the zero candidates must match.
     flowNearZero_=flowZeroBias_>0&&testSwitch(L"VEYRA_TEST_FLOW_NEAR");
@@ -1535,6 +1541,12 @@ bool EnhanceGraph::initNvof()
             if(!fgMaskTex_||!fgMaskHistory_)return false;
         }
         mvecSource_="amd-fidelityfx + photometric confidence";
+        if(rifeFlowRequested_){
+            rifeFlow_=std::make_unique<gfx::RifeFlow>();
+            if(rifeFlow_->initialize(context_.device(),ring_->queue(),nvofInA_.Get(),nvofInB_.Get(),fgBaseFlow_.Get(),rifeFlowDivisor_))
+                veyra::log::info("graph",std::format("FG motion: RIFE flow {} at 1/{} of the work size replaces FlowRefine..FlowFill (VEYRA_TEST_FLOW_RIFE)",rifeFlow_->modelName(),rifeFlowDivisor_));
+            else{veyra::log::error("graph","RIFE flow unavailable: the refined FidelityFX motion stays in use");rifeFlow_.reset();}
+        }
         return true;
     }
     nvof_ = std::make_unique<ngx::NvOfSession>();
@@ -4067,6 +4079,17 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                         }
                         tracker_.transition(list,fgGlobalMotion_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                     }
+                    if(rifeFlow_){
+                        // Dense RIFE flow instead of the grid refinement: both frames into the model
+                        // inputs, submit, the network on this queue, then RifeFlowToMotion writes
+                        // fgBaseFlow_ (below, in place of FgFlowAdapt). No CPU wait.
+                        if(!rifeFlow_->pack(list))return false;
+                        if(!submitGraph(slot))return false;
+                        cpuTrace.mark("flowPrepare");
+                        if(!rifeFlow_->run()){failedBackend_=engine::FailedBackend::OpticalFlow;return false;}
+                        list=ring_->acquireNext(slot,st);if(!list)return false;
+                        fgFlowHistoryValid_=false;fgMaskValid_=false;
+                    }else{
                     if(flowRegion_){
                         // Region vectors on the grid (after the camera motion, before the per-pixel choice):
                         // one group per cell; 16x16 window, match limit .04, margin .004, gradient .03.
@@ -4161,6 +4184,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                         tracker_.transition(list,fgFlowHistory_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                         fgFlowHistoryValid_=true;
                     }
+                    }   // !rifeFlow_
                     if(flowConsistency_)tracker_.transition(list,nvofReverseTex_.Get(),D3D12_RESOURCE_STATE_COMMON);
                 }
                 tracker_.transition(list,nvofInA_.Get(),D3D12_RESOURCE_STATE_COMMON);
@@ -4199,9 +4223,13 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         }
         if(flowRefine_){
             tracker_.transition(list,fgBaseFlow_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            const float c[8]={uintBits(nvofW_),uintBits(nvofH_),uintBits(workW_),uintBits(workH_),0,0,0,0};
-            fgFlowAdaptPass_.bind(list,c,gpuHandleOf(fgFlowAdaptPass_,0).ptr,gpuHandleOf(fgFlowAdaptPass_,1).ptr);
-            list->Dispatch((workW_+15)/16,(workH_+15)/16,1);tracker_.uavBarrier(list,fgBaseFlow_.Get());
+            if(rifeFlow_){if(!rifeFlow_->convert(list))return false;}
+            else{
+                const float c[8]={uintBits(nvofW_),uintBits(nvofH_),uintBits(workW_),uintBits(workH_),0,0,0,0};
+                fgFlowAdaptPass_.bind(list,c,gpuHandleOf(fgFlowAdaptPass_,0).ptr,gpuHandleOf(fgFlowAdaptPass_,1).ptr);
+                list->Dispatch((workW_+15)/16,(workH_+15)/16,1);
+            }
+            tracker_.uavBarrier(list,fgBaseFlow_.Get());
             tracker_.transition(list,fgBaseFlow_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             // Include refinement/fill/adaptation in the existing optical-flow
             // timing. Otherwise the performance panel silently omits this work.
@@ -5599,7 +5627,7 @@ void EnhanceGraph::shutdown()
     nrInstances_.clear();
     for(auto& layer:nrAutoPool_)layer.reset();nrAutoLevel_=0;nrAutoPoolReady_=nrAutoResetPending_=false;
     residualRgba_.Reset();preSrProtectionRgba_.Reset();interNrProtectionRgba_.Reset();nrFlow_.Reset();baseFlow_.Reset();
-    fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=fgDepthMatch_=false;rcasPass_={};rcasScratch_.Reset();rcasSharpness_=0.f;flowRefine_=flowConsistency_=false;
+    rifeFlow_.reset();rifeFlowRequested_=false;fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=fgDepthMatch_=false;rcasPass_={};rcasScratch_.Reset();rcasSharpness_=0.f;flowRefine_=flowConsistency_=false;
     fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;fgFlowMedian_.Reset();flowMedianPass_={};flowMedian_=flowSubPixel_=flowNearZero_=flowGlobal_=flowTemporal_=flowLayers_=fgFlowHistoryValid_=false;fgFlowHistory_.Reset();fgGlobalMotion_.Reset();globalMotionPass_={};flowGrow_=false;flowSmoothPenalty_=0.f;fgFlowGrown_.Reset();flowGrowPass_={};flowRegion_=false;fgFlowRegion_.Reset();flowRegionPass_={};fgMaskOn_=fgMaskValid_=fgMaskHistoryValid_=false;fgMaskThreshold_=0.f;fgMaskTex_.Reset();fgMaskHistory_.Reset();fgMaskPass_={};
     for(unsigned i=0;i<kGeneratedPoolSlots;++i){if(fgDisableMapped_[i]&&fgDisableReadback_[i]){D3D12_RANGE written{0,0};fgDisableReadback_[i]->Unmap(0,&written);}fgDisableMapped_[i]=nullptr;fgDisable_[i].Reset();fgDisableReadback_[i].Reset();generatedLeases_[i].reset();genFrame_[i].Reset();}for(auto& lease:realLeases_)lease.reset();fgDisableInit_.Reset();
     encPass_ = ComputePass{};

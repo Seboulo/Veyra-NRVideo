@@ -37,6 +37,39 @@ helped very large motion but doubled the slats of a lattice fence that full-reso
 Both scripts need onnxruntime 1.24.x for the float16 tool: the 1.29 tool writes
 duplicate node and tensor names and ONNX Runtime then refuses the model.
 
+### RIFE flow as XeSS frame generation motion (test switch)
+
+`VEYRA_TEST_FLOW_RIFE=1` (XeSS frame generation, motion source optical flow, AMD
+FidelityFX flow, Edge Aegis on): `gfx::RifeFlow` replaces FlowRefine..FlowFill.
+A flow-only model (`tools/rife_models/make_rife_flow_models.py`: the graph stops at
+the last IFBlock's flow and mask, no warp) runs on the previous and current
+optical-flow input frames at a quarter of the work size (2560x1440 -> 640x360,
+tensor 640x384) with t = 0.5. `RifeFlowToMotion.hlsl` turns its flows from the
+middle picture to each frame into current->previous motion per work pixel
+(mv = v(x + mv/2), v = F_t->0 - F_t->1, three fixed-point steps) written to the
+motion XeSS reads. The FidelityFX flow still runs for NR/SR, the camera motion of
+the pseudo-depth and scene changes. `VEYRA_TEST_FLOW_RIFE=2`: half size.
+`VEYRA_TEST_FLOW_RIFE_MODEL`: `rife_v4.25_lite` or `rife_v4.22_lite` (files
+`<name>_flow_fp16.onnx`). If the model or runtime is missing, the log says
+"RIFE flow unavailable" and the refined FidelityFX motion stays in use.
+
+Offline (2026-11-27, real frames of 1440p OBS captures, one real frame rebuilt from
+its neighbours two frames away with a plain motion-compensated average, luma PSNR):
+
+| motion | lattice (29 frames) | fast camera orbit, head (16) |
+|---|---|---|
+| zero | 21.6 | 17.2 |
+| 8x8 integer block matching (FidelityFX class) | 23.2 | 18.7 |
+| OpenCV DIS, half size | 26.1 | 21.6 |
+| RIFE 4.26 flow, quarter size (this path, fp16, emulated) | 26.3 | 22.7 |
+| RIFE 4.26 flow, half size | 26.3 | 22.6 |
+| RIFE 4.25 lite / 4.22 lite flow, quarter size | 26.4 / 26.3 | 22.4 / 22.8 |
+
+Both shaders were run on the Slang CPU target against the Python emulation used for
+these numbers (identical packing, motion within 6e-5 px). GPU cost on the target
+card is to be measured: about 5.5 GMAC for 4.26 at 640x384 (2.6 for 4.25 lite);
+`gpuFlowP95Ms` includes the network.
+
 ## Behaviour
 
 - Per real frame: copy of the enhanced colour frame, conversion to the model's

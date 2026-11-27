@@ -103,6 +103,8 @@ jobs:
           C:\rife-venv\Scripts\python.exe -m pip install --disable-pip-version-check onnx==1.23.2 onnxruntime==1.24.4
           C:\rife-venv\Scripts\python.exe tools/rife_models/make_rife_models.py C:\rife-src C:\rife-out
           C:\rife-venv\Scripts\python.exe tools/rife_models/make_rife_scale_models.py C:\rife-src C:\rife-out rife_v4.26 rife_v4.25_lite
+          # Flow-only models: XeSS frame generation motion from RIFE's flow (VEYRA_TEST_FLOW_RIFE).
+          C:\rife-venv\Scripts\python.exe tools/rife_models/make_rife_flow_models.py C:\rife-src C:\rife-out rife_v4.26 rife_v4.25_lite rife_v4.22_lite
           Get-ChildItem C:\rife-out | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName).Hash.ToLowerInvariant(), $_.Name } | Write-Host
 
       - name: Install Qt ${{ env.QT_VERSION }}
