@@ -70,6 +70,35 @@ these numbers (identical packing, motion within 6e-5 px). GPU cost on the target
 card is to be measured: about 5.5 GMAC for 4.26 at 640x384 (2.6 for 4.25 lite);
 `gpuFlowP95Ms` includes the network.
 
+### RIFE light (test switch)
+
+`VEYRA_TEST_RIFE_LIGHT=4` (or 2..8; frame generation = RIFE): the backend runs the
+flow-only model of the selected model (`<model>_flow_fp16.onnx`, the files built for
+the XeSS switch above) on area-averaged frames at 1/d of the working size
+(`RifeLightPack.hlsl`), then `RifeLightWarp.hlsl` does what the network's last step
+does, at the working size: flows and mask upsampled bilinearly, the previous frame
+read at x + F_t->0 and the current one at x + F_t->1, blended by the mask. Packing,
+shot-change test, subframe times and the queue order are those of the full network;
+only the tensors are smaller. Network cost at 2560x1440 for 4.26: about 5.5 GMAC at
+d = 4 and 22 at d = 2 (counted on the fp16 flow models), against 84 for the full network.
+
+Offline (same held-out frames as above, two real frames apart, final picture luma
+PSNR; the warp and blend emulated exactly as the shader does them):
+
+| | lattice (29) | worst 5 % blocks | fast camera orbit, head (16) |
+|---|---|---|---|
+| RIFE 4.26, full network | 27.0 | 20.7 | 23.1 |
+| RIFE 4.26 `_s05` (internal half scale) | 24.4 | | 24.9 |
+| RIFE light d = 2 | 26.9 | 20.8 | 25.4 |
+| RIFE light d = 4 | 26.5 | 20.4 | 25.3 |
+| RIFE light d = 4, 4.22 lite | 26.3 | 20.2 | 25.7 |
+
+At live motion (neighbouring real frames) on the same scenes, all three keep the
+lattice and the character's head intact where the XeSS frames tear (no live
+measurement yet: GPU cost and latency are to be read from `gpuFgBatchP95Ms` and the
+frame trace). Both shaders were run on the Slang CPU target against that emulation
+(packing identical, picture within 5e-5).
+
 ## Behaviour
 
 - Per real frame: copy of the enhanced colour frame, conversion to the model's

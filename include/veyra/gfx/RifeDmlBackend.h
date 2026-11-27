@@ -17,6 +17,14 @@ namespace veyra::gfx {
 // wait: ONNX Runtime only records and submits) and copyOutput() records the
 // conversion of its result into the owner's texture. Queue order alone orders
 // the three steps. 2X and 3X: subframe k of n is the frame at time k/n.
+//
+// RIFE light (VEYRA_TEST_RIFE_LIGHT=d, 2..8): the same steps with the flow-only
+// model (<model>_flow_fp16.onnx) on area-averaged frames at 1/d of the working
+// size, then RifeLightWarp.hlsl does the network's own last step at the full
+// size: both frames warped by the upsampled flows and blended with the mask.
+// The network's cost falls with d squared (1/16 at d = 4). Offline on GTA
+// captures (2026-11-27): d = 2 matched the full network on a lattice and beat it
+// on fast turns around the character; d = 4 lost 0.5 dB on the lattice.
 class RifeDmlBackend {
 public:
     RifeDmlBackend();

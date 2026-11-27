@@ -63,6 +63,16 @@ uint32_t padded(uint32_t v, uint32_t multiple) { return (v + multiple - 1) / mul
 
 #ifdef VEYRA_HAS_RIFE_DML
 namespace {
+// RIFE light (VEYRA_TEST_RIFE_LIGHT=2..8): the flow-only model (<model>_flow_fp16.onnx,
+// tools/rife_models/make_rife_flow_models.py) runs at 1/divisor of the working size and
+// RifeLightWarp.hlsl does RIFE's own last step (warp both frames, blend with the mask)
+// at the full size. 0: the full network.
+unsigned lightDivisor() {
+    wchar_t value[8]{};
+    if (!GetEnvironmentVariableW(L"VEYRA_TEST_RIFE_LIGHT", value, 8)) return 0;
+    const unsigned v = unsigned(_wtoi(value));
+    return v >= 2 && v <= 8 ? v : 0;
+}
 struct Runtime {
     const OrtApi* api = nullptr;
     const OrtDmlApi* dml = nullptr;
@@ -104,6 +114,9 @@ struct RifeDmlBackend::Impl {
     OrtSession* session = nullptr;
     OrtMemoryInfo* memory = nullptr;
     uint32_t width = 0, height = 0, pw = 0, ph = 0;
+    // Tensor content: the working size, or 1/light of it in light mode.
+    uint32_t flowW = 0, flowH = 0;
+    unsigned light = 0;        // VEYRA_TEST_RIFE_LIGHT divisor, 0: the full network
     unsigned multiplier = 2;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     std::string model;
@@ -111,12 +124,22 @@ struct RifeDmlBackend::Impl {
     // for k = 1..multiplier-1, then 1/2 at 3X for pairs the owner reduces to 2X.
     struct Tensor { ComPtr<ID3D12Resource> buffer; void* allocation = nullptr; OrtValue* value = nullptr; };
     std::array<Tensor, 2> planes;
-    std::vector<Tensor> times, outputs;
+    // outputs: the frame (3 channels), or in light mode the flow (4: F_t->0, F_t->1)
+    // with masks (1: the blend weight of the previous frame).
+    std::vector<Tensor> times, outputs, masks;
     // bindings[current * steps + step]: img0 = planes[1-current], img1 = planes[current].
     std::vector<OrtIoBinding*> bindings;
     ComPtr<ID3D12Resource> input;   // copy of the colour frame (SRV for the pack pass)
     D3D12_RESOURCE_STATES inputState = D3D12_RESOURCE_STATE_COPY_DEST;
     pipeline::ComputePass pack, unpack, shot;
+    // Light mode: frames[2] hold the two most recent colour frames at the working size
+    // (frames[current] the newest), replacing input. lightPack heap: [0..1] frames SRV,
+    // [2..3] planes UAV. warp heap: [2c, 2c+1] previous and current SRV when frames[c]
+    // is the newest, then per (owner texture, subframe): flow, mask and texture UAVs.
+    std::array<ComPtr<ID3D12Resource>, 2> frames;
+    std::array<D3D12_RESOURCE_STATES, 2> frameStates{D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON};
+    pipeline::ComputePass lightPack, warp;
+    ComPtr<ID3D12DescriptorHeap> staging;   // light-mode SRVs, created here and copied (see DescriptorStager)
     // Shot-change test (RifeShotChange.hlsl): work holds two 128x72 luma pictures and
     // 32 block errors; cut holds the 64-bit flag of the last pair at offset 0.
     ComPtr<ID3D12Resource> work, cut;
@@ -174,6 +197,11 @@ struct RifeDmlBackend::Impl {
         u.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
         device->CreateUnorderedAccessView(buffer, nullptr, &u, handle);
     }
+    void copyStagedSrv(UINT stagingSlot, const pipeline::ComputePass& pass, UINT slot) const {
+        const UINT increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        const D3D12_CPU_DESCRIPTOR_HANDLE from{staging->GetCPUDescriptorHandleForHeapStart().ptr + uint64_t(stagingSlot) * increment};
+        device->CopyDescriptorsSimple(1, cpu(pass, slot), from, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
     static void transition(ID3D12GraphicsCommandList* list, ID3D12Resource* r, D3D12_RESOURCE_STATES& state, D3D12_RESOURCE_STATES to) {
         if (state == to) return;
         D3D12_RESOURCE_BARRIER b{};
@@ -210,10 +238,13 @@ bool RifeDmlBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
     if (format != DXGI_FORMAT_R8G8B8A8_UNORM) { log::error("rife", std::format("SDR colour only (format {})", int(format))); return false; }
     if (multiplier < 2 || multiplier > 3) { log::error("rife", std::format("multiplier {} not supported (2X or 3X)", multiplier)); return false; }
     p.device = device; p.width = width; p.height = height; p.model = selectedModel(multiplier);
+    p.light = lightDivisor();
+    p.flowW = p.light ? std::max(32u, (width + p.light / 2) / p.light) : width;
+    p.flowH = p.light ? std::max(32u, (height + p.light / 2) / p.light) : height;
     const uint32_t pad = padMultiple(p.model);
-    p.pw = padded(width, pad); p.ph = padded(height, pad);
+    p.pw = padded(p.flowW, pad); p.ph = padded(p.flowH, pad);
     p.multiplier = multiplier; p.format = format;
-    const auto modelPath = runtimeDirectory() / (p.model + "_fp16.onnx");
+    const auto modelPath = runtimeDirectory() / (p.model + (p.light ? "_flow_fp16.onnx" : "_fp16.onnx"));
     if (FAILED(p.rt->createDevice(device, DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(&p.dmlDevice)))) { log::error("rife", "DMLCreateDevice failed"); return false; }
     const auto* api = p.rt->api;
     if (!p.check(api->CreateSessionOptions(&p.options), "CreateSessionOptions") ||
@@ -233,7 +264,11 @@ bool RifeDmlBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
     for (auto& t : p.planes) if (!p.makeTensor(t, 3)) return false;
     p.times.resize(p.steps()); p.outputs.resize(p.steps());
     for (auto& t : p.times) if (!p.makeTensor(t, 1)) return false;
-    for (auto& t : p.outputs) if (!p.makeTensor(t, 3)) return false;
+    for (auto& t : p.outputs) if (!p.makeTensor(t, p.light ? 4 : 3)) return false;
+    if (p.light) {
+        p.masks.resize(p.steps());
+        for (auto& t : p.masks) if (!p.makeTensor(t, 1)) return false;
+    }
     for (unsigned cur = 0; cur < 2; ++cur)
         for (unsigned s = 0; s < p.steps(); ++s) {
             OrtIoBinding* b = nullptr;
@@ -242,16 +277,28 @@ bool RifeDmlBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
             if (!p.check(api->BindInput(b, "img0", p.planes[1 - cur].value), "BindInput img0") ||
                 !p.check(api->BindInput(b, "img1", p.planes[cur].value), "BindInput img1") ||
                 !p.check(api->BindInput(b, "timestep", p.times[s].value), "BindInput timestep") ||
-                !p.check(api->BindOutput(b, "output", p.outputs[s].value), "BindOutput"))
+                !p.check(api->BindOutput(b, p.light ? "flow" : "output", p.outputs[s].value), "BindOutput") ||
+                (p.light && !p.check(api->BindOutput(b, "mask", p.masks[s].value), "BindOutput mask")))
                 return false;
         }
-    p.input = pipeline::makeTexture(device, width, height, format, false);
-    if (!p.input) return false;
-    p.inputState = D3D12_RESOURCE_STATE_COMMON;
+    if (p.light) {
+        for (unsigned i = 0; i < 2; ++i) {
+            p.frames[i] = pipeline::makeTexture(device, width, height, format, false);
+            if (!p.frames[i]) return false;
+            p.frameStates[i] = D3D12_RESOURCE_STATE_COMMON;
+        }
+    } else {
+        p.input = pipeline::makeTexture(device, width, height, format, false);
+        if (!p.input) return false;
+        p.inputState = D3D12_RESOURCE_STATE_COMMON;
+    }
     std::vector<uint8_t> cs;
     if (!p.pack.loadShader("RifePack.dxil", cs) || !p.pack.create(device, cs, 4 + p.steps(), 1, 1) ||
         !p.unpack.loadShader("RifeUnpack.dxil", cs) || !p.unpack.create(device, cs, 1 + 2 * 3 * 8, 1, 2) ||
         !p.shot.loadShader("RifeShotChange.dxil", cs) || !p.shot.create(device, cs, 7, 1, 3, 8))
+        return false;
+    if (p.light && (!p.lightPack.loadShader("RifeLightPack.dxil", cs) || !p.lightPack.create(device, cs, 4, 1, 1) ||
+                    !p.warp.loadShader("RifeLightWarp.dxil", cs) || !p.warp.create(device, cs, 4 + 8 * 3 * 3, 2, 3)))
         return false;
     {
         D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
@@ -283,8 +330,26 @@ bool RifeDmlBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
     device->CreateShaderResourceView(nullptr, &nullSrv, p.cpu(p.unpack, 0));
     device->CreateShaderResourceView(nullptr, &nullSrv, p.cpu(p.shot, 0));
     for (unsigned i = 0; i < p.times.size(); ++i) p.rawUav(p.times[i].buffer.Get(), 1, p.cpu(p.pack, 4 + i));
+    if (p.light) {
+        D3D12_DESCRIPTOR_HEAP_DESC hd{};
+        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 2; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&p.staging)))) return false;
+        const UINT increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        for (unsigned i = 0; i < 2; ++i)
+            pipeline::makeSrv(device, p.frames[i].Get(), format, {p.staging->GetCPUDescriptorHandleForHeapStart().ptr + uint64_t(i) * increment});
+        for (unsigned i = 0; i < 2; ++i) {
+            p.copyStagedSrv(i, p.lightPack, i);
+            p.rawUav(p.planes[i].buffer.Get(), 3, p.cpu(p.lightPack, 2 + i));
+            p.copyStagedSrv(1 - i, p.warp, 2 * i);   // previous
+            p.copyStagedSrv(i, p.warp, 2 * i + 1);   // current
+        }
+    }
     p.ok = true;
-    log::info("rife", std::format("ready model={} {}x{} tensor {}x{} {}X session={:.0f} ms", p.model, width, height, p.pw, p.ph, multiplier, sessionMs));
+    if (p.light)
+        log::info("rife", std::format("ready model={} light 1/{}: flow {}x{} tensor {}x{}, warp and blend at {}x{} {}X session={:.0f} ms (VEYRA_TEST_RIFE_LIGHT)",
+                                      p.model, p.light, p.flowW, p.flowH, p.pw, p.ph, width, height, multiplier, sessionMs));
+    else
+        log::info("rife", std::format("ready model={} {}x{} tensor {}x{} {}X session={:.0f} ms", p.model, width, height, p.pw, p.ph, multiplier, sessionMs));
     return true;
 }
 
@@ -300,12 +365,21 @@ bool RifeDmlBackend::capture(ID3D12GraphicsCommandList* list, ID3D12Resource* co
         list->ResourceBarrier(1, &b);
         p.inputState = to;
     };
-    barrier(D3D12_RESOURCE_STATE_COPY_DEST);
-    list->CopyResource(p.input.Get(), color);
-    barrier(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     const unsigned next = 1 - p.current;
-    const uint32_t c[8] = {p.width, p.height, p.pw, p.ph, 0, 0, 0, 0};
-    p.dispatch(list, p.pack, c, p.gpu(p.pack, 0), p.gpu(p.pack, 1 + next), p.pw, p.ph);
+    if (p.light) {
+        // The full-size frame is kept for the warp; the model gets its area average.
+        Impl::transition(list, p.frames[next].Get(), p.frameStates[next], D3D12_RESOURCE_STATE_COPY_DEST);
+        list->CopyResource(p.frames[next].Get(), color);
+        Impl::transition(list, p.frames[next].Get(), p.frameStates[next], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        const uint32_t c[8] = {p.width, p.height, p.flowW, p.flowH, p.pw, p.ph, 0, 0};
+        p.dispatch(list, p.lightPack, c, p.gpu(p.lightPack, next), p.gpu(p.lightPack, 2 + next), p.pw, p.ph);
+    } else {
+        barrier(D3D12_RESOURCE_STATE_COPY_DEST);
+        list->CopyResource(p.input.Get(), color);
+        barrier(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        const uint32_t c[8] = {p.width, p.height, p.pw, p.ph, 0, 0, 0, 0};
+        p.dispatch(list, p.pack, c, p.gpu(p.pack, 0), p.gpu(p.pack, 1 + next), p.pw, p.ph);
+    }
     if (!p.timesFilled) {
         for (unsigned s = 0; s < p.steps(); ++s) {
             const float t = p.time(s);
@@ -326,7 +400,7 @@ bool RifeDmlBackend::capture(ID3D12GraphicsCommandList* list, ID3D12Resource* co
     D3D12_RESOURCE_BARRIER workWritten{};
     workWritten.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; workWritten.UAV.pResource = p.work.Get();
     for (uint32_t mode = 0; mode < 3; ++mode) {
-        uint32_t sc[8] = {p.width, p.height, p.pw, p.ph, mode, next, p.haveFrame ? 1u : 0u, 0};
+        uint32_t sc[8] = {p.flowW, p.flowH, p.pw, p.ph, mode, next, p.haveFrame ? 1u : 0u, 0};
         std::memcpy(&sc[7], &threshold, 4);
         p.shot.bind(list, reinterpret_cast<const float*>(sc), p.gpu(p.shot, 0).ptr, p.gpu(p.shot, 1 + next * 3).ptr);
         // mode 1 needs both luma pictures; on a first frame it still runs, compare=0 discards it.
@@ -362,24 +436,37 @@ bool RifeDmlBackend::copyOutput(ID3D12GraphicsCommandList* list, ID3D12Resource*
         p.outputSlots.emplace(key, index);
         slot = index;
         for (unsigned k = 0; k < p.steps(); ++k) {
+            if (p.light) {
+                const UINT base = 4 + (slot * 3 + k) * 3;
+                p.rawUav(p.outputs[k].buffer.Get(), 4, p.cpu(p.warp, base));
+                p.rawUav(p.masks[k].buffer.Get(), 1, p.cpu(p.warp, base + 1));
+                pipeline::makeUav(p.device, output, p.format, p.cpu(p.warp, base + 2));
+                continue;
+            }
             const UINT base = 1 + (slot * 3 + k) * 2;
             p.rawUav(p.outputs[k].buffer.Get(), 3, p.cpu(p.unpack, base));
             pipeline::makeUav(p.device, output, p.format, p.cpu(p.unpack, base + 1));
         }
     } else slot = it->second;
-    const UINT base = 1 + (slot * 3 + unsigned(s)) * 2;
-    const uint32_t c[8] = {p.width, p.height, p.pw, p.ph, 0, 0, 0, 0};
     // Across a shot change the network would morph two unrelated pictures: the
     // conversion is skipped and the subframe shows the new frame instead.
     list->SetPredication(p.cut.Get(), 0, D3D12_PREDICATION_OP_NOT_EQUAL_ZERO);   // skipped on a cut
-    p.dispatch(list, p.unpack, c, p.gpu(p.unpack, 0), p.gpu(p.unpack, base), p.width, p.height);
+    if (p.light) {
+        const uint32_t c[8] = {p.width, p.height, p.flowW, p.flowH, p.pw, p.ph, 0, 0};
+        p.dispatch(list, p.warp, c, p.gpu(p.warp, 2 * p.current), p.gpu(p.warp, 4 + (slot * 3 + unsigned(s)) * 3), p.width, p.height);
+    } else {
+        const uint32_t c[8] = {p.width, p.height, p.pw, p.ph, 0, 0, 0, 0};
+        p.dispatch(list, p.unpack, c, p.gpu(p.unpack, 0), p.gpu(p.unpack, 1 + (slot * 3 + unsigned(s)) * 2), p.width, p.height);
+    }
+    ID3D12Resource* newest = p.light ? p.frames[p.current].Get() : p.input.Get();
+    D3D12_RESOURCE_STATES& newestState = p.light ? p.frameStates[p.current] : p.inputState;
     D3D12_RESOURCE_STATES outputState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     Impl::transition(list, output, outputState, D3D12_RESOURCE_STATE_COPY_DEST);
-    Impl::transition(list, p.input.Get(), p.inputState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Impl::transition(list, newest, newestState, D3D12_RESOURCE_STATE_COPY_SOURCE);
     list->SetPredication(p.cut.Get(), 0, D3D12_PREDICATION_OP_EQUAL_ZERO);       // skipped unless a cut
-    list->CopyResource(output, p.input.Get());
+    list->CopyResource(output, newest);
     list->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
-    Impl::transition(list, p.input.Get(), p.inputState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Impl::transition(list, newest, newestState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Impl::transition(list, output, outputState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     return true;
 }
@@ -398,6 +485,7 @@ void RifeDmlBackend::shutdown() {
     for (auto& t : p.planes) p.release(t);
     for (auto& t : p.times) p.release(t);
     for (auto& t : p.outputs) p.release(t);
+    for (auto& t : p.masks) p.release(t);
     if (p.session) api->ReleaseSession(p.session);
     if (p.options) api->ReleaseSessionOptions(p.options);
     if (p.memory) api->ReleaseMemoryInfo(p.memory);
