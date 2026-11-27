@@ -82,7 +82,15 @@ public:
     bool pack(ID3D12GraphicsCommandList*);
     // After the list holding pack() was submitted.
     bool run();
-    // motion in UNORDERED_ACCESS.
+    // Optional, once after initialize(): full-size motion edges (RifeMotionEdge and
+    // RifeMotionEdgeFilter, VEYRA_TEST_FLOW_RIFE_EDGE). The quarter-size flow blurs motion edges
+    // over 30 to 40 work pixels; each pixel on such an edge then tries the vectors 40 pixels
+    // around it, the camera vector and zero against the previous frame. globalMotion: the
+    // GlobalMotion.hlsl histogram, or null; globalScale: work pixels per histogram pixel.
+    bool enableEdges(ID3D12Resource* globalMotion, float globalScale);
+    bool edges() const;
+    // motion in UNORDERED_ACCESS; with edges, also previous, current and the histogram in
+    // NON_PIXEL_SHADER_RESOURCE.
     bool convert(ID3D12GraphicsCommandList*);
     bool ready() const;
     const std::string& modelName() const;

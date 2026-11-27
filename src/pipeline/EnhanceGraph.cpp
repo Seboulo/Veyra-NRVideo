@@ -1543,9 +1543,16 @@ bool EnhanceGraph::initNvof()
         mvecSource_="amd-fidelityfx + photometric confidence";
         if(rifeFlowRequested_){
             rifeFlow_=std::make_unique<gfx::RifeFlow>();
-            if(rifeFlow_->initialize(context_.device(),ring_->queue(),nvofInA_.Get(),nvofInB_.Get(),fgBaseFlow_.Get(),rifeFlowDivisor_))
+            if(rifeFlow_->initialize(context_.device(),ring_->queue(),nvofInA_.Get(),nvofInB_.Get(),fgBaseFlow_.Get(),rifeFlowDivisor_)){
                 veyra::log::info("graph",std::format("FG motion: RIFE flow {} at 1/{} of the work size replaces FlowRefine..FlowFill (VEYRA_TEST_FLOW_RIFE)",rifeFlow_->modelName(),rifeFlowDivisor_));
-            else{veyra::log::error("graph","RIFE flow unavailable: the refined FidelityFX motion stays in use");rifeFlow_.reset();}
+                // VEYRA_TEST_FLOW_RIFE_EDGE=1: sharpen RIFE's motion edges at the work size (character
+                // outline, top of the head), with the camera vector when VEYRA_TEST_FLOW_GLOBAL=1.
+                if(wchar_t edge[4]{};GetEnvironmentVariableW(L"VEYRA_TEST_FLOW_RIFE_EDGE",edge,4)&&edge[0]==L'1'){
+                    if(rifeFlow_->enableEdges(flowGlobal_?fgGlobalMotion_.Get():nullptr,flowGlobal_?float(workW_)/float(nvofW_):0.f))
+                        veyra::log::info("graph",std::format("FG motion: RIFE motion edges at {}x{}, camera candidate {} (VEYRA_TEST_FLOW_RIFE_EDGE)",workW_,workH_,flowGlobal_?"on":"off"));
+                    else veyra::log::error("graph","RIFE motion edges unavailable: RIFE's own motion stays in use");
+                }
+            }else{veyra::log::error("graph","RIFE flow unavailable: the refined FidelityFX motion stays in use");rifeFlow_.reset();}
         }
         return true;
     }
@@ -4223,7 +4230,20 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         }
         if(flowRefine_){
             tracker_.transition(list,fgBaseFlow_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            if(rifeFlow_){if(!rifeFlow_->convert(list))return false;}
+            if(rifeFlow_){
+                const bool edges=rifeFlow_->edges();
+                if(edges){
+                    // RifeMotionEdge reads both flow-input frames and the camera estimate.
+                    tracker_.transition(list,nvofInA_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    tracker_.transition(list,nvofInB_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    if(flowGlobal_)tracker_.transition(list,fgGlobalMotion_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                }
+                if(!rifeFlow_->convert(list))return false;
+                if(edges){
+                    tracker_.transition(list,nvofInA_.Get(),D3D12_RESOURCE_STATE_COMMON);
+                    tracker_.transition(list,nvofInB_.Get(),D3D12_RESOURCE_STATE_COMMON);
+                }
+            }
             else{
                 const float c[8]={uintBits(nvofW_),uintBits(nvofH_),uintBits(workW_),uintBits(workH_),0,0,0,0};
                 fgFlowAdaptPass_.bind(list,c,gpuHandleOf(fgFlowAdaptPass_,0).ptr,gpuHandleOf(fgFlowAdaptPass_,1).ptr);

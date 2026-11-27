@@ -70,6 +70,41 @@ these numbers (identical packing, motion within 6e-5 px). GPU cost on the target
 card is to be measured: about 5.5 GMAC for 4.26 at 640x384 (2.6 for 4.25 lite);
 `gpuFlowP95Ms` includes the network.
 
+#### Full-size motion edges (`VEYRA_TEST_FLOW_RIFE_EDGE=1`)
+
+At a quarter of the work size the flow's motion edges are about ten flow pixels wide
+once upsampled. Around a character that stays still while the camera turns, the
+character's vector leaks 30 to 40 work pixels into the background and the camera's
+vector into the top of the head, and XeSS moves the hair with the background (a rare
+artifact at the very top of the head, seen live on 2026-11-27). With
+`VEYRA_TEST_FLOW_RIFE_EDGE=1` two passes run after `RifeFlowToMotion.hlsl`:
+
+- `RifeMotionEdge.hlsl`: where the vectors 40 pixels away on opposite sides differ
+  (by more than 6 px + 8 % of the pixel's vector), the pixel tries those eight
+  vectors, the camera vector (`VEYRA_TEST_FLOW_GLOBAL=1`) and zero against the
+  previous frame (3x3 mean absolute RGB difference) and switches only on a clear
+  win (60 % of its own cost minus .005, below .05).
+- `RifeMotionEdgeFilter.hlsl`: a switch whose vector lands, in the chosen field, on
+  something that moves differently is uncovered background and is undone (the
+  side of the character that gets uncovered keeps RIFE's vector); a switch stays
+  when 15 of the 25 pixels around it switched; a hole with 10 good switches around
+  it takes the one closest to their mean.
+
+Offline (2026-11-27), composites of a real still character over a real background
+panned by a known vector (exact answer), RIFE 4.26 quarter, mean end-point error:
+
+| pixels | 145 px/frame pan: RIFE / with edges | 60 px/frame pan: RIFE / with edges |
+|---|---|---|
+| top of the head, within 24 px of its edge | 49.2 / 3.7 | 10.7 / 1.5 |
+| background within 48 px of the character | 55.0 / 9.6 | 11.0 / 6.3 |
+| uncovered background | 103.6 / 107.4 | 37.8 / 40.6 |
+| far from any edge | 4.5 / 4.6 | 1.8 / 1.8 |
+
+On 12 real frame pairs with the trellis the passes changed about 1 % of the pixels,
+none on the trellis itself. Both shaders were run on the Slang CPU target against
+the emulation (identical output but one pixel, a floating-point tie). Their GPU
+time is part of `gpuFlowP95Ms`.
+
 ### RIFE light (test switch)
 
 `VEYRA_TEST_RIFE_LIGHT=4` (or 2..8; frame generation = RIFE): the backend runs the

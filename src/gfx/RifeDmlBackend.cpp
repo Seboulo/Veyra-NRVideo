@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -519,11 +520,24 @@ struct RifeFlow::Impl {
     Tensor img0, img1, timestep, flow, mask;
     uint32_t inputW = 0, inputH = 0, motionW = 0, motionH = 0, flowW = 0, flowH = 0, pw = 0, ph = 0;
     // Pack heap: [0] previous SRV, [1] current SRV, [2] img0, [3] img1, [4] timestep UAVs.
-    // Convert heap: [0] null SRV, [1] flow tensor UAV, [2] motion UAV.
+    // Convert heap: [0] null SRV, [1] flow tensor UAV, [2] motion UAV (raw UAV with edges).
     pipeline::ComputePass pack, convert;
     ComPtr<ID3D12DescriptorHeap> staging;   // SRVs are created here and copied (see DescriptorStager)
     std::string model;
     bool ok = false;
+    // Full-size motion edges (enableEdges, VEYRA_TEST_FLOW_RIFE_EDGE): RifeFlowToMotion writes raw,
+    // RifeMotionEdge chooses (chosen, flags), RifeMotionEdgeFilter writes the motion texture.
+    // Edge heap: [0] raw, [1] current, [2] previous, [3] camera histogram SRVs, [4] chosen, [5] flags UAVs.
+    // Filter heap: [0] raw, [1] chosen, [2] flags SRVs, [3] motion UAV.
+    bool edges = false;
+    float globalScale = 0.f;
+    ID3D12Resource* previousColor = nullptr;   // owned by the graph
+    ID3D12Resource* currentColor = nullptr;
+    ID3D12Resource* motionTexture = nullptr;
+    ComPtr<ID3D12Resource> raw, chosen, flags;
+    std::array<D3D12_RESOURCE_STATES, 3> edgeStates{};
+    pipeline::ComputePass edge, edgeFilter;
+    ComPtr<ID3D12DescriptorHeap> edgeStaging;
 
     bool check(OrtStatus* s, const char* what) {
         if (!s) return true;
@@ -593,6 +607,7 @@ bool RifeFlow::initialize(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D1
         return false;
     }
     p.device = device;
+    p.previousColor = previous; p.currentColor = current; p.motionTexture = motion;
     p.inputW = uint32_t(in.Width); p.inputH = in.Height;
     p.motionW = uint32_t(out.Width); p.motionH = out.Height;
     p.flowW = std::max(32u, (p.motionW + divisor / 2) / divisor); p.flowH = std::max(32u, (p.motionH + divisor / 2) / divisor);
@@ -665,13 +680,88 @@ bool RifeFlow::run() {
     return p.ok && p.check(p.rt->api->RunWithBinding(p.session, nullptr, p.binding), "RunWithBinding");
 }
 
+bool RifeFlow::enableEdges(ID3D12Resource* globalMotion, float globalScale) {
+    auto& p = *p_;
+    if (!p.ok) return false;
+    p.raw = pipeline::makeTexture(p.device, p.motionW, p.motionH, DXGI_FORMAT_R16G16_FLOAT, true);
+    p.chosen = pipeline::makeTexture(p.device, p.motionW, p.motionH, DXGI_FORMAT_R16G16_FLOAT, true);
+    p.flags = pipeline::makeTexture(p.device, p.motionW, p.motionH, DXGI_FORMAT_R8_UINT, true);
+    if (!p.raw || !p.chosen || !p.flags) return false;
+    p.edgeStates.fill(D3D12_RESOURCE_STATE_COMMON);
+    std::vector<uint8_t> cs;
+    if (!p.edge.loadShader("RifeMotionEdge.dxil", cs) || !p.edge.create(p.device, cs, 6, 4, 2, 8, 0, true) ||
+        !p.edgeFilter.loadShader("RifeMotionEdgeFilter.dxil", cs) || !p.edgeFilter.create(p.device, cs, 4, 3, 1))
+        return false;
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 7; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    if (FAILED(p.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&p.edgeStaging)))) return false;
+    const UINT increment = p.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    UINT next = 0;
+    auto srv = [&](ID3D12Resource* texture, DXGI_FORMAT format, const pipeline::ComputePass& pass, UINT slot) {
+        const auto staged = Impl::cpu(p.edgeStaging.Get(), increment, next++);
+        pipeline::makeSrv(p.device, texture, format, staged);
+        p.device->CopyDescriptorsSimple(1, Impl::cpu(pass.heap.Get(), pass.increment, slot), staged, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    };
+    const auto colour = DXGI_FORMAT_B8G8R8A8_UNORM;
+    srv(p.raw.Get(), DXGI_FORMAT_R16G16_FLOAT, p.edge, 0);
+    srv(p.currentColor, colour, p.edge, 1);
+    srv(p.previousColor, colour, p.edge, 2);
+    srv(globalMotion, DXGI_FORMAT_R32_UINT, p.edge, 3);   // null view without a camera estimate
+    pipeline::makeUav(p.device, p.chosen.Get(), DXGI_FORMAT_R16G16_FLOAT, Impl::cpu(p.edge.heap.Get(), p.edge.increment, 4));
+    pipeline::makeUav(p.device, p.flags.Get(), DXGI_FORMAT_R8_UINT, Impl::cpu(p.edge.heap.Get(), p.edge.increment, 5));
+    srv(p.raw.Get(), DXGI_FORMAT_R16G16_FLOAT, p.edgeFilter, 0);
+    srv(p.chosen.Get(), DXGI_FORMAT_R16G16_FLOAT, p.edgeFilter, 1);
+    srv(p.flags.Get(), DXGI_FORMAT_R8_UINT, p.edgeFilter, 2);
+    pipeline::makeUav(p.device, p.motionTexture, DXGI_FORMAT_R16G16_FLOAT, Impl::cpu(p.edgeFilter.heap.Get(), p.edgeFilter.increment, 3));
+    // RifeFlowToMotion now writes raw.
+    pipeline::makeUav(p.device, p.raw.Get(), DXGI_FORMAT_R16G16_FLOAT, Impl::cpu(p.convert.heap.Get(), p.convert.increment, 2));
+    p.globalScale = globalMotion ? globalScale : 0.f;
+    p.edges = true;
+    return true;
+}
+
+bool RifeFlow::edges() const { return p_->edges; }
+
 bool RifeFlow::convert(ID3D12GraphicsCommandList* list) {
     auto& p = *p_;
     if (!p.ok || !list) return false;
+    auto to = [&](int i, D3D12_RESOURCE_STATES state) {
+        ID3D12Resource* r[3] = {p.raw.Get(), p.chosen.Get(), p.flags.Get()};
+        if (p.edgeStates[i] == state) return;
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = r[i]; b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = p.edgeStates[i]; b.Transition.StateAfter = state;
+        list->ResourceBarrier(1, &b);
+        p.edgeStates[i] = state;
+    };
+    const uint32_t groupsX = (p.motionW + 15) / 16, groupsY = (p.motionH + 15) / 16;
+    if (p.edges) to(0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     // Three iterations: enough on 2026-11-27 captures (offline emulation, shader_sim.py).
     const uint32_t c[8] = {p.motionW, p.motionH, p.flowW, p.flowH, p.pw, p.ph, 3, 0};
     p.convert.bind(list, reinterpret_cast<const float*>(c), p.gpu(p.convert, 0).ptr, p.gpu(p.convert, 1).ptr);
-    list->Dispatch((p.motionW + 15) / 16, (p.motionH + 15) / 16, 1);
+    list->Dispatch(groupsX, groupsY, 1);
+    if (!p.edges) return true;
+    // Tuned at 2560x1440 (2026-11-27): 40 px apart, edge 6 px + 8 % of the vector, win at 60 % of
+    // the own cost minus .005, match limit .05; 15 of 25 neighbours switched to keep a switch, 10 good
+    // ones to fill a hole. Lengths scale with the width.
+    const float s = float(p.motionW) / 2560.f;
+    const float radius = std::max(8.f, std::round(40.f * s)), edgeBase = 6.f * s;
+    to(0, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    to(1, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    to(2, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    uint32_t e[8] = {p.motionW, p.motionH};
+    const float ef[6] = {radius, edgeBase, .08f, .6f, .05f, p.globalScale};
+    std::memcpy(&e[2], ef, sizeof(ef));
+    p.edge.bind(list, reinterpret_cast<const float*>(e), p.gpu(p.edge, 0).ptr, p.gpu(p.edge, 4).ptr);
+    list->Dispatch(groupsX, groupsY, 1);
+    to(1, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    to(2, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    uint32_t f[8] = {p.motionW, p.motionH, 0, 0, 15, 10, 0, 0};
+    const float ff[2] = {edgeBase, .08f};
+    std::memcpy(&f[2], ff, sizeof(ff));
+    p.edgeFilter.bind(list, reinterpret_cast<const float*>(f), p.gpu(p.edgeFilter, 0).ptr, p.gpu(p.edgeFilter, 3).ptr);
+    list->Dispatch(groupsX, groupsY, 1);
     return true;
 }
 
@@ -719,6 +809,8 @@ bool RifeFlow::initialize(ID3D12Device*, ID3D12CommandQueue*, ID3D12Resource*, I
 bool RifeFlow::pack(ID3D12GraphicsCommandList*) { return false; }
 bool RifeFlow::run() { return false; }
 bool RifeFlow::convert(ID3D12GraphicsCommandList*) { return false; }
+bool RifeFlow::enableEdges(ID3D12Resource*, float) { return false; }
+bool RifeFlow::edges() const { return false; }
 bool RifeFlow::ready() const { return false; }
 const std::string& RifeFlow::modelName() const { return p_->model; }
 void RifeFlow::shutdown() {}
