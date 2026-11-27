@@ -1107,6 +1107,11 @@ private:
     ComputePass rcasPass_;
     ComPtr<ID3D12Resource> rcasScratch_;
     float rcasSharpness_=0.f;
+    // VEYRA_TEST_DETAIL=1: cored luma sharpening + deband + dither of the SDR output before FG
+    // (Detail.hlsl), in place of RCAS; shares rcasScratch_. Parameters: VEYRA_TEST_DETAIL_*.
+    ComputePass detailPass_;
+    bool detail_=false;
+    float detailConstants_[16]{};
     // Stage-5 output stabiliser (anti-flicker). Constructed only when the
     // setting is non-zero; a default (0) session never allocates it and the
     // dispatch is skipped, so the disabled path is unchanged.

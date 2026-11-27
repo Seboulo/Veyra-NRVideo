@@ -1238,9 +1238,35 @@ bool EnhanceGraph::createResources()
         // Sharpening of SDR output only: RCAS works on display-encoded [0,1] values.
         wchar_t stops[16]{};
         rcasSharpness_=0.f;
-        if(outputFormat()==DXGI_FORMAT_R8G8B8A8_UNORM&&GetEnvironmentVariableW(L"VEYRA_TEST_RCAS",stops,16)){
+        detail_=false;
+        wchar_t detailOn[4]{};
+        if(outputFormat()==DXGI_FORMAT_R8G8B8A8_UNORM&&GetEnvironmentVariableW(L"VEYRA_TEST_DETAIL",detailOn,4)&&detailOn[0]==L'1'){
+            // Detail.hlsl in place of RCAS. Values in 8-bit code levels where they are levels.
+            const auto setting=[](const wchar_t* name,float fallback,float lo,float hi){
+                wchar_t text[16]{};
+                if(!GetEnvironmentVariableW(name,text,16))return fallback;
+                wchar_t* end=nullptr;const float value=std::wcstof(text,&end);
+                return end!=text&&std::isfinite(value)?std::clamp(value,lo,hi):fallback;
+            };
+            const float amount=setting(L"VEYRA_TEST_DETAIL_SHARPEN",1.f,0.f,4.f);
+            const float core=setting(L"VEYRA_TEST_DETAIL_CORE",2.f,0.f,16.f);
+            const float overshoot=setting(L"VEYRA_TEST_DETAIL_OVERSHOOT",.1f,0.f,1.f);
+            const float smooth=setting(L"VEYRA_TEST_DETAIL_SMOOTH",.3f,0.f,1.f);
+            const float sigma=setting(L"VEYRA_TEST_DETAIL_SIGMA",1.f,.5f,2.f);
+            const float threshold=setting(L"VEYRA_TEST_DETAIL_DEBAND",2.f,0.f,16.f);
+            const float radius=setting(L"VEYRA_TEST_DETAIL_RADIUS",16.f,1.f,64.f);
+            const float iterations=setting(L"VEYRA_TEST_DETAIL_ITERATIONS",2.f,1.f,4.f);
+            const float dither=setting(L"VEYRA_TEST_DETAIL_DITHER",0.f,0.f,1.f);
+            const float g1=std::exp(-1.f/(2.f*sigma*sigma)),g2=std::exp(-4.f/(2.f*sigma*sigma)),sum=1.f+2.f*g1+2.f*g2;
+            const float c[16]={uintBits(workW_),uintBits(workH_),amount,core/255.f,overshoot,smooth,1.f/sum,g1/sum,g2/sum,
+                threshold/255.f,radius,uintBits(uint32_t(std::lround(iterations))),dither>.5f?1.f:0.f,0,0,0};
+            std::copy(std::begin(c),std::end(c),detailConstants_);
+            detail_=true;
+        }else if(outputFormat()==DXGI_FORMAT_R8G8B8A8_UNORM&&GetEnvironmentVariableW(L"VEYRA_TEST_RCAS",stops,16)){
             wchar_t* end=nullptr;const float value=std::wcstof(stops,&end);
             rcasSharpness_=std::exp2(-std::clamp(end!=stops?value:.5f,0.f,4.f));
+        }
+        if(detail_||rcasSharpness_>0){
             rcasScratch_=makeTexture(context_.device(),workW_,workH_,outputFormat(),true);
             if(!rcasScratch_)return false;
         }
@@ -2620,6 +2646,12 @@ bool EnhanceGraph::createComputePasses()
         if(!rcasPass_.loadShader("Rcas.dxil",cs)||!rcasPass_.create(context_.device(),cs,3,1,1))return false;
         veyra::log::info("graph",std::format("RCAS sharpening on sharpness={:.3f} (test switch)",rcasSharpness_));
     }
+    if(detail_){
+        if(!detailPass_.loadShader("Detail.dxil",cs)||!detailPass_.create(context_.device(),cs,3,1,1,16,0,true))return false;
+        const auto* c=detailConstants_;
+        veyra::log::info("graph",std::format("detail pass on (VEYRA_TEST_DETAIL, replaces RCAS): sharpen={:.2f} core={:.1f} overshoot={:.2f} smooth={:.2f} weights={:.3f}/{:.3f}/{:.3f} deband={:.1f} radius={:.0f} iterations={} dither={}",
+            c[2],c[3]*255.f,c[4],c[5],c[6],c[7],c[8],c[9]*255.f,c[10],std::bit_cast<uint32_t>(c[11]),c[12]>.5f?"on":"off"));
+    }
     if(fgPseudoDepth_){
         if(!fgPseudoDepthPass_.loadShader("FgPseudoDepth.dxil",cs)||!fgPseudoDepthPass_.create(context_.device(),cs,10,4,1))return false;
         veyra::log::info("graph",std::format("XeSS pseudo-depth on (foreground = motion unlike the surroundings) match={}",fgDepthMatch_?"far-when-unmatched":"off"));
@@ -3038,6 +3070,11 @@ bool EnhanceGraph::createViews()
         stagedSrv(videoFrame_[0].Get(),outputFormat(),rcasPass_,0);
         stagedSrv(videoFrame_[1].Get(),outputFormat(),rcasPass_,1);
         makeUav(context_.device(),rcasScratch_.Get(),outputFormat(),cpu(rcasPass_,2));
+    }
+    if(detail_){
+        stagedSrv(videoFrame_[0].Get(),outputFormat(),detailPass_,0);
+        stagedSrv(videoFrame_[1].Get(),outputFormat(),detailPass_,1);
+        makeUav(context_.device(),rcasScratch_.Get(),outputFormat(),cpu(detailPass_,2));
     }
     if(fgPseudoDepth_){
         // Per parity i: SRVs 4i (motion), 4i+1 (camera-motion histogram or null), 4i+2/4i+3
@@ -4860,12 +4897,16 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         tracker_.transition(list, videoFrame_[parity].Get(), D3D12_RESOURCE_STATE_COMMON);
 
     }
-    if(rcasSharpness_>0){
+    if(rcasSharpness_>0||detail_){
         auto* frame=videoFrame_[parity].Get();
         tracker_.transition(list,frame,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         tracker_.transition(list,rcasScratch_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        const float c[8]={uintBits(workW_),uintBits(workH_),rcasSharpness_,0,0,0,0,0};
-        rcasPass_.bind(list,c,gpuHandleOf(rcasPass_,parity).ptr,gpuHandleOf(rcasPass_,2).ptr);
+        if(detail_){
+            detailPass_.bind(list,detailConstants_,gpuHandleOf(detailPass_,parity).ptr,gpuHandleOf(detailPass_,2).ptr);
+        }else{
+            const float c[8]={uintBits(workW_),uintBits(workH_),rcasSharpness_,0,0,0,0,0};
+            rcasPass_.bind(list,c,gpuHandleOf(rcasPass_,parity).ptr,gpuHandleOf(rcasPass_,2).ptr);
+        }
         list->Dispatch((workW_+15)/16,(workH_+15)/16,1);
         tracker_.uavBarrier(list,rcasScratch_.Get());
         tracker_.transition(list,rcasScratch_.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -5647,7 +5688,7 @@ void EnhanceGraph::shutdown()
     nrInstances_.clear();
     for(auto& layer:nrAutoPool_)layer.reset();nrAutoLevel_=0;nrAutoPoolReady_=nrAutoResetPending_=false;
     residualRgba_.Reset();preSrProtectionRgba_.Reset();interNrProtectionRgba_.Reset();nrFlow_.Reset();baseFlow_.Reset();
-    rifeFlow_.reset();rifeFlowRequested_=false;fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=fgDepthMatch_=false;rcasPass_={};rcasScratch_.Reset();rcasSharpness_=0.f;flowRefine_=flowConsistency_=false;
+    rifeFlow_.reset();rifeFlowRequested_=false;fgFlowRefined_.Reset();fgFlowFilled_.Reset();fgBaseFlow_.Reset();flowRefinePass_={};flowFillPass_={};fgFlowAdaptPass_={};flowViewPass_={};flowView_=false;fgPseudoDepthPass_={};fgPseudoDepth_=fgDepthMatch_=false;rcasPass_={};rcasScratch_.Reset();rcasSharpness_=0.f;detailPass_={};detail_=false;flowRefine_=flowConsistency_=false;
     fgFlowClaims_.Reset();fgFlowAgreement_.Reset();flowClaimPass_={};flowClaims_=false;fgFlowMedian_.Reset();flowMedianPass_={};flowMedian_=flowSubPixel_=flowNearZero_=flowGlobal_=flowTemporal_=flowLayers_=fgFlowHistoryValid_=false;fgFlowHistory_.Reset();fgGlobalMotion_.Reset();globalMotionPass_={};flowGrow_=false;flowSmoothPenalty_=0.f;fgFlowGrown_.Reset();flowGrowPass_={};flowRegion_=false;fgFlowRegion_.Reset();flowRegionPass_={};fgMaskOn_=fgMaskValid_=fgMaskHistoryValid_=false;fgMaskThreshold_=0.f;fgMaskTex_.Reset();fgMaskHistory_.Reset();fgMaskPass_={};
     for(unsigned i=0;i<kGeneratedPoolSlots;++i){if(fgDisableMapped_[i]&&fgDisableReadback_[i]){D3D12_RANGE written{0,0};fgDisableReadback_[i]->Unmap(0,&written);}fgDisableMapped_[i]=nullptr;fgDisable_[i].Reset();fgDisableReadback_[i].Reset();generatedLeases_[i].reset();genFrame_[i].Reset();}for(auto& lease:realLeases_)lease.reset();fgDisableInit_.Reset();
     encPass_ = ComputePass{};
