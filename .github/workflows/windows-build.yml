@@ -57,6 +57,54 @@ jobs:
           if (Test-Path third_party_local) { throw 'third_party_local must not be tracked in Git' }
           scripts/ci/fetch-sdks.ps1 -VeyraRoot . -WorkRoot C:\sdk-src -ManifestOut C:\sdk-manifest.json
 
+      - name: Stage ONNX Runtime DirectML and DirectML for RIFE (NuGet)
+        run: |
+          # CMakeLists.txt compiles RifeDmlBackend when these headers exist under
+          # deps/ort-dml (VEYRA_ORT_DML_ROOT); the DLLs go to runtime/rife in the package.
+          $pkgs = @(
+            @{ Id = 'Microsoft.ML.OnnxRuntime.DirectML'; Version = '1.24.4'; Dir = 'ort' },
+            @{ Id = 'Microsoft.AI.DirectML'; Version = '1.15.4'; Dir = 'dml' }
+          )
+          foreach ($p in $pkgs) {
+            $zip = "C:\sdk-src\$($p.Id).$($p.Version).zip"
+            Invoke-WebRequest "https://www.nuget.org/api/v2/package/$($p.Id)/$($p.Version)" -OutFile $zip
+            Write-Host "$($p.Id) $($p.Version) SHA256 $((Get-FileHash $zip).Hash.ToLowerInvariant())"
+            Expand-Archive $zip -DestinationPath "deps/ort-dml/$($p.Dir)" -Force
+          }
+          foreach ($f in 'deps/ort-dml/ort/build/native/include/dml_provider_factory.h', 'deps/ort-dml/ort/build/native/include/onnxruntime_c_api.h',
+                         'deps/ort-dml/dml/include/DirectML.h', 'deps/ort-dml/ort/runtimes/win-x64/native/onnxruntime.dll',
+                         'deps/ort-dml/ort/runtimes/win-x64/native/onnxruntime_providers_shared.dll', 'deps/ort-dml/dml/bin/x64-win/DirectML.dll') {
+            if (!(Test-Path -LiteralPath $f -PathType Leaf)) { throw "RIFE runtime file missing: $f" }
+          }
+
+      - name: Build RIFE models for runtime/rife
+        run: |
+          # Practical-RIFE weights (MIT) as exported by vs-mlrt, pinned by SHA-256.
+          $models = [ordered]@{
+            'rife_v4.26'      = 'dfdabd84a2a3db773f87604b8cc255e94a6a72f13550d910ccd3b4ee2606cd4f'
+            'rife_v4.22_lite' = 'e7c3872fd217663911f0b89a5940bdc314f5a061fd5fa8639fd1674d31d2f1cf'
+            'rife_v4.25_lite' = '7d53e29fff5e67345b19f4ce97dfd1e34b490eedc752df2236904fda1a13842c'
+          }
+          New-Item -ItemType Directory -Force C:\rife-src, C:\rife-out | Out-Null
+          foreach ($m in $models.Keys) {
+            $file = "C:\rife-src\$m.7z"
+            Invoke-WebRequest "https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/$m.7z" -OutFile $file
+            $got = (Get-FileHash $file).Hash.ToLowerInvariant()
+            if ($got -ne $models[$m]) { throw "$m.7z SHA-256 $got does not match $($models[$m])" }
+            7z x -y -oC:\rife-src $file | Out-Null
+          }
+          # A Python with wheels for the pinned packages (3.11-3.13 from the runner tool cache).
+          $py = Get-ChildItem C:\hostedtoolcache\windows\Python -Directory | Where-Object Name -match '^3\.1[123]\.' |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $py) { throw 'no Python 3.11-3.13 in the runner tool cache' }
+          $python = Join-Path $py.FullName 'x64\python.exe'
+          & $python -m venv C:\rife-venv
+          # onnxruntime 1.24.x: the float16 tool of newer releases writes duplicate names.
+          C:\rife-venv\Scripts\python.exe -m pip install --disable-pip-version-check onnx==1.23.2 onnxruntime==1.24.4
+          C:\rife-venv\Scripts\python.exe tools/rife_models/make_rife_models.py C:\rife-src C:\rife-out
+          C:\rife-venv\Scripts\python.exe tools/rife_models/make_rife_scale_models.py C:\rife-src C:\rife-out rife_v4.26 rife_v4.25_lite
+          Get-ChildItem C:\rife-out | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName).Hash.ToLowerInvariant(), $_.Name } | Write-Host
+
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@d325aaf2a8baeeda41ad0b5d39f84a6af9bcf005 # v4.3.0
         with:
@@ -196,6 +244,11 @@ jobs:
             Copy-Item (Join-Path C:\b $f) "$stage\virtualcam"
           }
           Copy-Item C:\v\installed\x64-windows\bin\*.dll $stage
+          # RIFE runtime (loaded by absolute path from runtime/rife, docs/RIFE_DIRECTML.md).
+          $rife = "$stage\runtime\rife"
+          New-Item -ItemType Directory -Force $rife | Out-Null
+          Copy-Item deps/ort-dml/ort/runtimes/win-x64/native/onnxruntime.dll, deps/ort-dml/ort/runtimes/win-x64/native/onnxruntime_providers_shared.dll, deps/ort-dml/dml/bin/x64-win/DirectML.dll $rife
+          Copy-Item C:\rife-out\*.onnx $rife
           Copy-Item C:\dovi\bin\*.dll $stage
           & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --qmldir qml --no-translations `
             --skip-plugin-types qmltooling,generic "$stage\veyra_qml_ui.exe"
@@ -228,7 +281,9 @@ jobs:
           @'
           Veyra Windows CI build for development testing.
           The official release packages are on the project's GitHub Releases page.
-          DLSS, XeSS and other proprietary GPU runtimes, RIFE models, and optional audio packages are absent.
+          DLSS, XeSS and other proprietary GPU runtimes and optional audio packages are absent.
+          runtime/rife holds ONNX Runtime DirectML 1.24.4 (MIT), DirectML 1.15.4 (Microsoft redistributable)
+          and RIFE models (Practical-RIFE, MIT; vs-mlrt exports converted by tools/rife_models).
           '@ | Set-Content -Encoding utf8 "$stage\CI-BUILD.txt"
           Copy-Item licenses\* "$stage\licenses" -Recurse
           Copy-Item C:\v\installed\x64-windows\share\ffmpeg\copyright "$stage\licenses\FFMPEG-COPYRIGHT.txt"
@@ -236,6 +291,10 @@ jobs:
           Copy-Item C:\v\installed\x64-windows-static\share\libass\copyright "$stage\licenses\LIBASS-COPYRIGHT.txt"
           Copy-Item (Join-Path $env:DOVI_SOURCE 'LICENSE') "$stage\licenses\LIBDOVI-LICENSE.txt"
           Copy-Item third_party_local\amd\FidelityFX-SDK\sdk\LICENSE.txt "$stage\licenses\AMD_FIDELITYFX_LICENSE.txt"
+          foreach ($l in @(@('deps/ort-dml/ort/LICENSE', 'ONNXRUNTIME-LICENSE.txt'), @('deps/ort-dml/ort/ThirdPartyNotices.txt', 'ONNXRUNTIME-ThirdPartyNotices.txt'),
+                           @('deps/ort-dml/dml/LICENSE.txt', 'DIRECTML-LICENSE.txt'), @('deps/ort-dml/dml/ThirdPartyNotices.txt', 'DIRECTML-ThirdPartyNotices.txt'))) {
+            if (Test-Path -LiteralPath $l[0]) { Copy-Item $l[0] "$stage\licenses\$($l[1])" } else { Write-Warning "license file not in package: $($l[0])" }
+          }
           [ordered]@{
             commit = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; runner = "$env:ImageOS $env:ImageVersion"
             msvc = $env:VCToolsVersion; windowsSdk = $env:WindowsSDKVersion; qt = $env:QT_VERSION

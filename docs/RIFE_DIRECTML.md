@@ -20,6 +20,23 @@ System32 is never used. Building needs only the headers: `VEYRA_ORT_DML_ROOT`
 points at the two extracted NuGet packages (`ort/build/native/include`,
 `dml/include`); without them the backend compiles to an unavailable stub.
 
+### Half-resolution flow and other test models
+
+`tools/rife_models/make_rife_scale_models.py` builds `<model>_s05_fp16.onnx`: every
+IFBlock of the flow network runs at twice its scale, like Practical-RIFE's
+`--scale 0.5`, while the final warp and merge stay at full resolution (RIFE 4.26 at
+2560x1472: 30 instead of 84 GMAC). It also converts models that
+`make_rife_models.py` does not build (for example `rife_v4.25_lite`). Select one with
+`VEYRA_TEST_RIFE_MODEL`; the tensor padding follows the model (64; 128 for `_s05` and
+4.25 lite; 256 for 4.25 lite `_s05`), `VEYRA_TEST_RIFE_PAD` overrides it.
+
+On held-out real frames of a 1440p GTA capture (2026-11-27) the half-resolution flow
+helped very large motion but doubled the slats of a lattice fence that full-resolution
+4.26 kept clean, so it is a cost fallback, not the default.
+
+Both scripts need onnxruntime 1.24.x for the float16 tool: the 1.29 tool writes
+duplicate node and tensor names and ONNX Runtime then refuses the model.
+
 ## Behaviour
 
 - Per real frame: copy of the enhanced colour frame, conversion to the model's

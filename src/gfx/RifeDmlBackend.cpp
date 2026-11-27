@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -40,9 +41,23 @@ std::string selectedModel(unsigned multiplier) {
     }
     return defaultModel(multiplier);
 }
-// Model tensors are padded to a multiple of 64 (the network downsamples 16x
-// and its flow pyramid needs whole blocks).
-uint32_t padded(uint32_t v) { return (v + 63u) / 64u * 64u; }
+// Model tensors are padded to whole blocks of the coarsest flow level: each IFBlock
+// resizes by 1/scale and then halves twice, so the multiple is 4x its largest scale.
+// 4.26 and 4.22 lite (largest scale 16): 64. 4.25 lite (32) and the half-resolution
+// flow variants made by tools/rife_models/make_rife_scale_models.py ("_s05": every
+// scale doubled, like Practical-RIFE --scale 0.5): 128, and 256 for 4.25 lite _s05.
+// VEYRA_TEST_RIFE_PAD overrides it for other test models.
+uint32_t padMultiple(const std::string& model) {
+    wchar_t value[16]{};
+    if (GetEnvironmentVariableW(L"VEYRA_TEST_RIFE_PAD", value, 16)) {
+        const unsigned v = unsigned(_wtoi(value));
+        if (v >= 64 && v <= 512 && (v & (v - 1)) == 0) return v;
+    }
+    const bool lite25 = model.find("4.25_lite") != std::string::npos;
+    const bool half = model.find("_s05") != std::string::npos;
+    return 64u << ((lite25 ? 1 : 0) + (half ? 1 : 0));
+}
+uint32_t padded(uint32_t v, uint32_t multiple) { return (v + multiple - 1) / multiple * multiple; }
 }
 
 #ifdef VEYRA_HAS_RIFE_DML
@@ -193,8 +208,10 @@ bool RifeDmlBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
     if (!p.rt->api) { log::error("rife", "runtime unavailable: " + p.rt->error); return false; }
     if (format != DXGI_FORMAT_R8G8B8A8_UNORM) { log::error("rife", std::format("SDR colour only (format {})", int(format))); return false; }
     if (multiplier < 2 || multiplier > 3) { log::error("rife", std::format("multiplier {} not supported (2X or 3X)", multiplier)); return false; }
-    p.device = device; p.width = width; p.height = height; p.pw = padded(width); p.ph = padded(height);
-    p.multiplier = multiplier; p.format = format; p.model = selectedModel(multiplier);
+    p.device = device; p.width = width; p.height = height; p.model = selectedModel(multiplier);
+    const uint32_t pad = padMultiple(p.model);
+    p.pw = padded(width, pad); p.ph = padded(height, pad);
+    p.multiplier = multiplier; p.format = format;
     const auto modelPath = runtimeDirectory() / (p.model + "_fp16.onnx");
     if (FAILED(p.rt->createDevice(device, DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(&p.dmlDevice)))) { log::error("rife", "DMLCreateDevice failed"); return false; }
     const auto* api = p.rt->api;
