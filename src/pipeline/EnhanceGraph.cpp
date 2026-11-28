@@ -910,6 +910,7 @@ bool EnhanceGraph::initialize(const EnhanceGraphDesc& desc)
     if(wchar_t value[4]{};flowRefine_&&fidelityFlow&&GetEnvironmentVariableW(L"VEYRA_TEST_FLOW_RIFE",value,4)&&(value[0]==L'1'||value[0]==L'2')){
         rifeFlowRequested_=true;rifeFlowDivisor_=value[0]==L'2'?2u:4u;
     }
+    rifeLean_=rifeFlowRequested_&&testSwitch(L"VEYRA_TEST_RIFE_LEAN");amdOfStale_=false;rifeLeanLogged_=-1;
     // VEYRA_TEST_FLOW_NEAR=1: small vectors around zero too. VEYRA_TEST_FLOW_ZERO_BIAS=<cost>:
     // how much better (mean luma difference, 0..1) the zero candidates must match.
     flowNearZero_=flowZeroBias_>0&&testSwitch(L"VEYRA_TEST_FLOW_NEAR");
@@ -4031,6 +4032,16 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
     };
     // Guidance from original source-space color before SR/NR. Queue waits are GPU-side.
     bool haveFlow = false;
+    // VEYRA_TEST_RIFE_LEAN: RIFE's flow is the XeSS motion and no other pass reads the FidelityFX
+    // flow, so FidelityFX, densify, the camera motion and the flow adaptations only cost GPU time.
+    // The flow inputs (nvofInA_/nvofInB_) are still prepared: RIFE reads them.
+    const bool rifeLean=rifeLean_&&rifeFlow_&&amdOf_&&!rifeFlow_->edges()&&presentSinkFg()&&!fgEnabled_&&!nvofStandalone_&&
+        !srEnabled_&&!nrEnabled_&&nrInstances_.empty()&&!dlaaRequested()&&!firstSrFlow_&&!secondSrFlow_;
+    if(rifeLean_&&int(rifeLean)!=rifeLeanLogged_){
+        rifeLeanLogged_=int(rifeLean);
+        veyra::log::info("graph",rifeLean?"FG motion: lean RIFE path on, FidelityFX flow, densify, camera motion and flow adaptation skipped (VEYRA_TEST_RIFE_LEAN)":
+            "FG motion: lean RIFE path off this frame, another pass reads the FidelityFX flow (VEYRA_TEST_RIFE_LEAN)");
+    }
     const bool runMotion = nvofStandalone_ || (presentSinkFg()&&desc_.fgUsesFlow()) || (fgEnabled_&&desc_.fgUsesFlow()) || (srEnabled_&&desc_.srUsesFlow()&&temporalSrPass(desc_)) || dlaaRequested();
     if (runMotion && (gpuDis_ || amdOf_ || (nvof_ && nvof_->initialized()))) {
         const float dims[8] = {uintBits(nvofW_),uintBits(nvofH_),uintBits(nvofW_),uintBits(nvofH_),0,0,0,0};
@@ -4050,8 +4061,14 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
         tracker_.transition(list,nvofInB_.Get(),D3D12_RESOURCE_STATE_COMMON);
         if(amdOf_){
             gpuTimer_.mark(list,GpuStage::Flow);
-            if(!amdOf_->dispatch(list,nvofInB_.Get(),!prevValid_))return false;
-            ++metrics_.amdOfExecuteCount;haveFlow=prevValid_;
+            if(rifeLean){
+                amdOfStale_=true;haveFlow=prevValid_;
+            }else{
+                // After skipped frames FidelityFX's own previous frame is old: restart its history.
+                const bool restart=!prevValid_||amdOfStale_;
+                if(!amdOf_->dispatch(list,nvofInB_.Get(),restart))return false;
+                ++metrics_.amdOfExecuteCount;haveFlow=prevValid_&&!amdOfStale_;amdOfStale_=false;
+            }
             if(!flowRefine_||!haveFlow)gpuTimer_.mark(list,GpuStage::Flow,true);
         }
         if(gpuDis_ && prevValid_){
@@ -4097,9 +4114,11 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                 tracker_.transition(list,nvofInB_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 const float dc[8]={uintBits(rawW_),uintBits(rawH_),uintBits(nvofW_),uintBits(nvofH_),
                     uintBits(selectedGrid_),uintBits(0),uintBits(32),uintBits((desc_.validateMotion?3u:0u)|(amdOf_?4u:0u)|(amdOf_&&!amdOf_->warmedUp()?8u:0u))};
+                if(!rifeLean){
                 densifyPass_.bind(list,dc,gpuHandleOf(densifyPass_,0).ptr,gpuHandleOf(densifyPass_,5).ptr);
                 list->Dispatch((nvofW_+15)/16,(nvofH_+15)/16,1);
                 tracker_.uavBarrier(list,flowTex_.Get());tracker_.uavBarrier(list,confTex_.Get());
+                }
                 if(flowRefine_){
                     // FG motion (XeSS present sink, graph DLSS/FSR/ANR): per-pixel candidate
                     // choice, then disocclusion fill.
@@ -4110,7 +4129,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
                     const uint32_t smoothBits=flowSmoothPenalty_>0?(256u|(std::min(uint32_t(flowSmoothPenalty_*1e5f+.5f),0xffffu)<<16)):0u;
                     const uint32_t refineFlags=(flowConsistency_?1u:0u)|(amdOf_?2u:0u)|(amdOf_&&!amdOf_->warmedUp()?4u:0u)|(amdOf_&&flowSubPixel_?8u:0u)|(flowNearZero_?16u:0u)|(flowGlobal_?32u:0u)|(flowTemporal_&&fgFlowHistoryValid_?64u:0u)|(flowLayers_?128u:0u)|smoothBits;
                     if(flowTemporal_)tracker_.transition(list,fgFlowHistory_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                    if(flowGlobal_){
+                    if(flowGlobal_&&!rifeLean){
                         // Clear, accumulate and resolve the median grid vector (the camera's motion).
                         tracker_.transition(list,fgGlobalMotion_.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                         // Modes 3-4 (layer rule): the foreground's own motion, rows 2-3.
@@ -4254,7 +4273,8 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
             flowAdaptPass_.bind(list,c,gpuHandleOf(flowAdaptPass_,0).ptr,gpuHandleOf(flowAdaptPass_,descriptor).ptr);
             list->Dispatch((w+15)/16,(h+15)/16,1);tracker_.uavBarrier(list,output);tracker_.transition(list,output,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         };
-        adapt(nrFlow_.Get(),nrW_,nrH_,1);adapt(baseFlow_.Get(),workW_,workH_,2);
+        // Lean RIFE path: no NR or SR reads these (the XeSS motion is fgBaseFlow_).
+        if(!rifeLean){adapt(nrFlow_.Get(),nrW_,nrH_,1);adapt(baseFlow_.Get(),workW_,workH_,2);}
         // First DLSS uses first-result pixels. Each FSR pass uses its input pixels.
         if(firstSrFlow_){
             const auto extent=firstSrMotionExtent();
@@ -4945,7 +4965,8 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
             tracker_.transition(list,presentMotion_[parity].Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             tracker_.transition(list,presentDepth_[parity].Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             // Camera motion only when this frame's flow ran (the histogram is this frame's).
-            const float globalScale=flowGlobal_&&haveFlow&&desc_.fgUsesFlow()?float(workW_)/float(nvofW_):0.f;
+            // Lean RIFE path: no camera motion this frame, the rings alone grade the depth.
+            const float globalScale=flowGlobal_&&!rifeLean&&haveFlow&&desc_.fgUsesFlow()?float(workW_)/float(nvofW_):0.f;
             // Colour match only when this frame's flow ran (the flow colours are this frame's pair).
             const float matchScale=fgDepthMatch_&&haveFlow?float(nvofW_)/float(workW_):0.f;
             const float c[8]={uintBits(workW_),uintBits(workH_),96.f,224.f,1.f,globalScale,matchScale,.08f};

@@ -1019,6 +1019,12 @@ private:
     bool rifeFlowRequested_=false;
     unsigned rifeFlowDivisor_=4;
     std::unique_ptr<gfx::RifeFlow> rifeFlow_;
+    // VEYRA_TEST_RIFE_LEAN=1: while RIFE's flow is the XeSS motion and nothing else reads the
+    // FidelityFX flow (no NR, SR, DLAA, graph frame generation, standalone flow or RIFE motion
+    // edges), FidelityFX, densify, the camera motion and the flow adaptations are skipped
+    // (process()). amdOfStale_: FidelityFX skipped at least one frame, so its own history is old.
+    bool rifeLean_=false,amdOfStale_=false;
+    int rifeLeanLogged_=-1;
     // NVOF backward output (previous->current) for the refinement's forward-backward check
     // (uncovered background). Only with flowRefine_; VEYRA_TEST_FLOW_CONSISTENCY=0 leaves
     // NVOF forward-only (photometric refinement). NR/SR never read it.
